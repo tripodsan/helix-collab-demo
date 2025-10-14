@@ -54,7 +54,8 @@
   },
   "homepage": "https://github.com/yjs/y-prosemirror#readme",
   "dependencies": {
-    "lib0": "^0.2.109"
+    "lib0": "^0.2.109",
+    "y-websocket": "3.0.0"
   },
   "peerDependencies": {
     "prosemirror-model": "^1.7.1",

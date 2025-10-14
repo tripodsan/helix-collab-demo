@@ -1,7 +1,7 @@
 /* eslint-env browser */
 
 import * as Y from 'yjs'
-import { WebrtcProvider } from 'y-webrtc'
+import { WebsocketProvider } from 'y-websocket';
 import { ySyncPlugin, yCursorPlugin, yUndoPlugin, undo, redo, initProseMirrorDoc } from '../src/y-prosemirror.js'
 import { EditorState } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
@@ -9,9 +9,12 @@ import { schema } from './schema.js'
 import { exampleSetup } from 'prosemirror-example-setup'
 import { keymap } from 'prosemirror-keymap'
 
+const SERVER = 'https://a3iyofoytf.execute-api.us-east-1.amazonaws.com';
+const ROOM_NAME = 'production';
+
 window.addEventListener('load', () => {
   const ydoc = new Y.Doc()
-  const provider = new WebrtcProvider('prosemirror-debug', ydoc)
+  const provider = new WebsocketProvider(SERVER, ROOM_NAME, ydoc);
   const type = ydoc.getXmlFragment('prosemirror')
 
   const editor = document.createElement('div')
