@@ -42,7 +42,7 @@ export default [{
   input: './demo/prosemirror.js',
   output: {
     name: 'demo',
-    file: 'demo/dist/prosemirror.js',
+    file: 'demo/prosemirror-dist.js',
     format: 'iife',
     sourcemap: true
   },
