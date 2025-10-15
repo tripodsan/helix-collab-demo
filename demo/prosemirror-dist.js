@@ -12447,9 +12447,10 @@
   const encodeQueryParams = params =>
     map(params, (val, key) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`).join('&');
 
-  /**
-   * @module provider/websocket
-   */
+  /*
+  copied from https://github.com/rlingineni/y-serverless/blob/main/client/src/services/y-websocket.js
+  to support base64
+  */
 
   const messageSync = 0;
   const messageQueryAwareness = 3;
@@ -12607,27 +12608,33 @@
    */
   const setupWS = (provider) => {
     if (provider.shouldConnect && provider.ws === null) {
+      provider.useBase64;
       const websocket = new provider._WS(provider.url, provider.protocols);
       websocket.binaryType = 'arraybuffer';
       provider.ws = websocket;
       provider.wsconnecting = true;
       provider.wsconnected = false;
       provider.synced = false;
+      const { encode, decode } = provider;
 
       websocket.onmessage = (event) => {
+        console.log('ws.onmessage', event);
         provider.wsLastMessageReceived = getUnixTime();
-        const encoder = readMessage(provider, new Uint8Array(event.data), true);
+        const encoder = readMessage(provider, decode(event.data), true);
         if (length$1(encoder) > 1) {
-          websocket.send(toUint8Array(encoder));
+          websocket.send(encode(toUint8Array(encoder)));
         }
       };
       websocket.onerror = (event) => {
+        console.log('ws.onerror', event);
         provider.emit('connection-error', [event, provider]);
       };
       websocket.onclose = (event) => {
+        console.log('ws.onclose', event);
         closeWebsocketConnection(provider, websocket, event);
       };
       websocket.onopen = () => {
+        console.log('ws.onopen');
         provider.wsLastMessageReceived = getUnixTime();
         provider.wsconnecting = false;
         provider.wsconnected = true;
@@ -12639,7 +12646,7 @@
         const encoder = createEncoder();
         writeVarUint(encoder, messageSync);
         writeSyncStep1(encoder, provider.doc);
-        websocket.send(toUint8Array(encoder));
+        websocket.send(encode(toUint8Array(encoder)));
         // broadcast local awareness state
         if (provider.awareness.getLocalState() !== null) {
           const encoderAwarenessState = createEncoder();
@@ -12650,7 +12657,7 @@
               provider.doc.clientID
             ])
           );
-          websocket.send(toUint8Array(encoderAwarenessState));
+          websocket.send(encode(toUint8Array(encoderAwarenessState)));
         }
       };
       provider.emit('status', [{
@@ -12666,7 +12673,8 @@
   const broadcastMessage = (provider, buf) => {
     const ws = provider.ws;
     if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
-      ws.send(buf);
+      // TODO: guard against too long arrays
+      ws.send(provider.useBase64 ? btoa(String.fromCharCode(...new Uint8Array(buf))) : buf);
     }
     if (provider.bcconnected) {
       publish(provider.bcChannel, buf, provider);
@@ -12709,7 +12717,8 @@
       WebSocketPolyfill = WebSocket,
       resyncInterval = -1,
       maxBackoffTime = 2500,
-      disableBc = false
+      disableBc = false,
+      useBase64 = false,
     } = {}) {
       super();
       // ensure that serverUrl does not end with /
@@ -12736,6 +12745,14 @@
       this.disableBc = disableBc;
       this.wsUnsuccessfulReconnects = 0;
       this.messageHandlers = messageHandlers.slice();
+      this.useBase64 = useBase64;
+      this.decode = useBase64
+        ? fromBase64
+        : (data) => new Uint8Array(data);
+      this.encode = useBase64
+        ? toBase64
+        : (data) => data;
+
       /**
        * @type {boolean}
        */
@@ -12762,7 +12779,7 @@
             const encoder = createEncoder();
             writeVarUint(encoder, messageSync);
             writeSyncStep1(encoder, doc);
-            this.ws.send(toUint8Array(encoder));
+            this.ws.send(this.encode(toUint8Array(encoder)));
           }
         }, resyncInterval));
       }
@@ -12822,7 +12839,7 @@
         if (
           this.wsconnected &&
           messageReconnectTimeout <
-            getUnixTime() - this.wsLastMessageReceived
+          getUnixTime() - this.wsLastMessageReceived
         ) {
           // no message received in a long time - not even your own awareness
           // updates (which are updated every 15 seconds)
@@ -31103,12 +31120,16 @@
 
   /* eslint-env browser */
 
-  const SERVER = 'https://a3iyofoytf.execute-api.us-east-1.amazonaws.com';
-  const ROOM_NAME = 'production';
+  const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
 
   window.addEventListener('load', () => {
     const ydoc = new Doc();
-    const provider = new WebsocketProvider(SERVER, ROOM_NAME, ydoc);
+    const provider = new WebsocketProvider(SERVER, 'production', ydoc, {
+      params: {
+        doc: 'test-room'
+      },
+      useBase64: true,
+    });
     const type = ydoc.getXmlFragment('prosemirror');
 
     const editor = document.createElement('div');
