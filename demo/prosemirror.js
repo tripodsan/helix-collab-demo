@@ -48,6 +48,13 @@ window.addEventListener('load', () => {
     prosemirrorView.focus()
   })
 
+  provider.on('status', (arg) => {
+    console.log('status', arg)
+    console.log('clientID', provider.doc.clientID);
+    document.getElementById('y-status').textContent = `Status: ${arg.status}`;
+    document.getElementById('y-user').textContent = `User: ${provider.doc.clientID}`;
+  });
+
   const connectBtn = /** @type {HTMLElement} */ (document.getElementById('y-connect-btn'))
   connectBtn.addEventListener('click', () => {
     if (provider.shouldConnect) {
