@@ -31124,11 +31124,13 @@
 
   window.addEventListener('load', () => {
     const ydoc = new Doc();
-    const provider = new WebsocketProvider(SERVER, 'production', ydoc, {
+    const provider = new WebsocketProvider(SERVER, 'prod00', ydoc, {
       params: {
         doc: 'test-room'
       },
+      protocols: ['yjs', '*'],
       useBase64: true,
+      connect: false,
     });
     const type = ydoc.getXmlFragment('prosemirror');
 
@@ -31175,6 +31177,13 @@
         provider.connect();
         connectBtn.textContent = 'Disconnect';
       }
+    });
+    document.getElementById('y-user-name').addEventListener('change', (e) => {
+      provider.awareness.setLocalStateField('user', { name: e.target.value });
+    });
+
+    document.getElementById('y-auth').addEventListener('change', (e) => {
+      provider.protocols = ['yjs', e.target.value];
     });
 
     // @ts-ignore

@@ -13,11 +13,13 @@ const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
 
 window.addEventListener('load', () => {
   const ydoc = new Y.Doc()
-  const provider = new WebsocketProvider(SERVER, 'production', ydoc, {
+  const provider = new WebsocketProvider(SERVER, 'prod00', ydoc, {
     params: {
       doc: 'test-room'
     },
+    protocols: ['yjs', '*'],
     useBase64: true,
+    connect: false,
   });
   const type = ydoc.getXmlFragment('prosemirror')
 
@@ -65,6 +67,13 @@ window.addEventListener('load', () => {
       connectBtn.textContent = 'Disconnect'
     }
   })
+  document.getElementById('y-user-name').addEventListener('change', (e) => {
+    provider.awareness.setLocalStateField('user', { name: e.target.value });
+  });
+
+  document.getElementById('y-auth').addEventListener('change', (e) => {
+    provider.protocols = ['yjs', e.target.value]
+  });
 
   // @ts-ignore
   window.example = { provider, ydoc, type, prosemirrorView }

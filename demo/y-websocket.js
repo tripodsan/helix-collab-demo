@@ -179,7 +179,6 @@ const closeWebsocketConnection = (provider, ws, event) => {
  */
 const setupWS = (provider) => {
   if (provider.shouldConnect && provider.ws === null) {
-    const b64 = provider.useBase64;
     const websocket = new provider._WS(provider.url, provider.protocols)
     websocket.binaryType = 'arraybuffer'
     provider.ws = websocket
