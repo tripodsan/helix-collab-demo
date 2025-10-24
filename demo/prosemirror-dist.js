@@ -12608,7 +12608,6 @@
    */
   const setupWS = (provider) => {
     if (provider.shouldConnect && provider.ws === null) {
-      provider.useBase64;
       const websocket = new provider._WS(provider.url, provider.protocols);
       websocket.binaryType = 'arraybuffer';
       provider.ws = websocket;
@@ -31120,7 +31119,8 @@
 
   /* eslint-env browser */
 
-  const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
+  // const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
+  const SERVER = 'http://localhost:8080';
 
   window.addEventListener('load', () => {
     const ydoc = new Doc();

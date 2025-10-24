@@ -9,7 +9,8 @@ import { schema } from './schema.js'
 import { exampleSetup } from 'prosemirror-example-setup'
 import { keymap } from 'prosemirror-keymap'
 
-const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
+// const SERVER = 'https://z21npzmtdj.execute-api.us-east-1.amazonaws.com';
+const SERVER = 'http://localhost:8080';
 
 window.addEventListener('load', () => {
   const ydoc = new Y.Doc()
