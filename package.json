@@ -13,7 +13,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "dist": "npm run clean && rollup -c && tsc",
+    "dist": "npm run clean && rollup -c",
     "test": "npm run lint && rollup -c && node dist/test.cjs",
     "lint": "standard && tsc",
     "watch": "rollup -wc",
@@ -54,14 +54,14 @@
   },
   "homepage": "https://github.com/yjs/y-prosemirror#readme",
   "dependencies": {
-    "lib0": "^0.2.109"
+    "lib0": "^0.2.114",
+    "y-protocols": "1.0.6",
+    "yjs": "13.6.27"
   },
   "peerDependencies": {
     "prosemirror-model": "^1.7.1",
     "prosemirror-state": "^1.2.3",
-    "prosemirror-view": "^1.9.10",
-    "y-protocols": "^1.0.1",
-    "yjs": "^13.5.38"
+    "prosemirror-view": "^1.9.10"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^21.0.1",
@@ -70,16 +70,12 @@
     "http-server": "^0.12.3",
     "jsdom": "^15.1.1",
     "prosemirror-example-setup": "^1.2.1",
-    "prosemirror-model": "^1.18.1",
     "prosemirror-schema-basic": "^1.2.0",
-    "prosemirror-state": "^1.4.1",
     "prosemirror-transform": "^1.6.0",
-    "prosemirror-view": "^1.26.2",
     "rollup": "^2.59.0",
     "standard": "^17.0.0",
     "typescript": "^5.4.5",
-    "y-protocols": "^1.0.5",
-    "yjs": "^13.5.38"
+    "@adobe/y-websocket": "git://github.com/adobe-rnd/y-websocket.git#3.0.0-base64"
   },
   "engines": {
     "npm": ">=8.0.0",

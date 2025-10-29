@@ -145,10 +145,10 @@
    * True iff condition holds on some element in the Array.
    *
    * @function
-   * @template S
-   * @template {ArrayLike<S>} ARR
+   * @template {ArrayLike<any>} ARR
+   *
    * @param {ARR} arr
-   * @param {function(S, number, ARR):boolean} f
+   * @param {ARR extends ArrayLike<infer S> ? ((value:S, index:number, arr:ARR) => boolean) : never} f
    * @return {boolean}
    */
   const some = (arr, f) => {
@@ -1795,8 +1795,9 @@
   };
 
   /**
-   * @param {Object<string,any>} obj
-   * @param {function(any,string):boolean} f
+   * @template {{ [key:string|number|symbol]: any }} T
+   * @param {T} obj
+   * @param {(v:T[keyof T],k:keyof T)=>boolean} f
    * @return {boolean}
    */
   const every = (obj, f) => {
@@ -1812,7 +1813,7 @@
    * Calls `Object.prototype.hasOwnProperty`.
    *
    * @param {any} obj
-   * @param {string|symbol} key
+   * @param {string|number|symbol} key
    * @return {boolean}
    */
   const hasProperty = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
@@ -1823,6 +1824,30 @@
    * @return {boolean}
    */
   const equalFlat = (a, b) => a === b || (size(a) === size(b) && every(a, (val, key) => (val !== undefined || hasProperty(b, key)) && b[key] === val));
+
+  /**
+   * Make an object immutable. This hurts performance and is usually not needed if you perform good
+   * coding practices.
+   */
+  const freeze = Object.freeze;
+
+  /**
+   * Make an object and all its children immutable.
+   * This *really* hurts performance and is usually not needed if you perform good coding practices.
+   *
+   * @template {any} T
+   * @param {T} o
+   * @return {Readonly<T>}
+   */
+  const deepFreeze = (o) => {
+    for (const key in o) {
+      const c = o[key];
+      if (typeof c === 'object' || typeof c === 'function') {
+        deepFreeze(o[key]);
+      }
+    }
+    return freeze(o)
+  };
 
   const EqualityTraitSymbol = Symbol('Equality');
 
@@ -2528,9 +2553,12 @@
   const iterateDeletedStructs = (transaction, ds, f) =>
     ds.clients.forEach((deletes, clientid) => {
       const structs = /** @type {Array<GC|Item>} */ (transaction.doc.store.clients.get(clientid));
-      for (let i = 0; i < deletes.length; i++) {
-        const del = deletes[i];
-        iterateStructs(transaction, structs, del.clock, del.len, f);
+      if (structs != null) {
+        const lastStruct = structs[structs.length - 1];
+        const clockState = lastStruct.id.clock + lastStruct.length;
+        for (let i = 0, del = deletes[i]; i < deletes.length && del.clock < clockState; del = deletes[++i]) {
+          iterateStructs(transaction, structs, del.clock, del.len, f);
+        }
       }
     });
 
@@ -2887,8 +2915,9 @@
        * lost (with false as a parameter).
        */
       this.isSynced = false;
+      this.isDestroyed = false;
       /**
-       * Promise that resolves once the document has been loaded from a presistence provider.
+       * Promise that resolves once the document has been loaded from a persistence provider.
        */
       this.whenLoaded = create$2(resolve => {
         this.on('load', () => {
@@ -3105,6 +3134,7 @@
      * Emit `destroy` event and unregister all event handlers.
      */
     destroy () {
+      this.isDestroyed = true;
       from(this.subdocs).forEach(subdoc => subdoc.destroy());
       const item = this._item;
       if (item !== null) {
@@ -3565,7 +3595,7 @@
        */
       this.keyMap = new Map();
       /**
-       * Refers to the next uniqe key-identifier to me used.
+       * Refers to the next unique key-identifier to me used.
        * See writeKey method for more information.
        *
        * @type {number}
@@ -3842,7 +3872,7 @@
             // @type {string|null}
             const struct = new Item$1(
               createID(client, clock),
-              null, // leftd
+              null, // left
               (info & BIT8) === BIT8 ? decoder.readLeftID() : null, // origin
               null, // right
               (info & BIT7) === BIT7 ? decoder.readRightID() : null, // right origin
@@ -3866,7 +3896,7 @@
 
             const struct = new Item(
               createID(client, clock),
-              null, // leftd
+              null, // left
               origin, // origin
               null, // right
               rightOrigin, // right origin
@@ -3899,7 +3929,7 @@
    * then we start emptying the stack.
    *
    * It is not possible to have circles: i.e. struct1 (from client1) depends on struct2 (from client2)
-   * depends on struct3 (from client1). Therefore the max stack size is eqaul to `structReaders.length`.
+   * depends on struct3 (from client1). Therefore the max stack size is equal to `structReaders.length`.
    *
    * This method is implemented in a way so that we can resume computation if this update
    * causally depends on another update.
@@ -3967,14 +3997,14 @@
     const addStackToRestSS = () => {
       for (const item of stack) {
         const client = item.id.client;
-        const unapplicableItems = clientsStructRefs.get(client);
-        if (unapplicableItems) {
+        const inapplicableItems = clientsStructRefs.get(client);
+        if (inapplicableItems) {
           // decrement because we weren't able to apply previous operation
-          unapplicableItems.i--;
-          restStructs.clients.set(client, unapplicableItems.refs.slice(unapplicableItems.i));
+          inapplicableItems.i--;
+          restStructs.clients.set(client, inapplicableItems.refs.slice(inapplicableItems.i));
           clientsStructRefs.delete(client);
-          unapplicableItems.i = 0;
-          unapplicableItems.refs = [];
+          inapplicableItems.i = 0;
+          inapplicableItems.refs = [];
         } else {
           // item was the last item on clientsStructRefs and the field was already cleared. Add item to restStructs and continue
           restStructs.clients.set(client, [item]);
@@ -4058,7 +4088,7 @@
   /**
    * Read and apply a document update.
    *
-   * This function has the same effect as `applyUpdate` but accepts an decoder.
+   * This function has the same effect as `applyUpdate` but accepts a decoder.
    *
    * @param {decoding.Decoder} decoder
    * @param {Doc} ydoc
@@ -4520,7 +4550,7 @@
        * after the meant position.
        * I.e. position 1 in 'ab' is associated to character 'b'.
        *
-       * If assoc < 0, then the relative position is associated to the caharacter
+       * If assoc < 0, then the relative position is associated to the character
        * before the meant position.
        *
        * @type {number}
@@ -4535,7 +4565,7 @@
    *
    * @function
    */
-  const createRelativePositionFromJSON = json => new RelativePosition(json.type == null ? null : createID(json.type.client, json.type.clock), json.tname || null, json.item == null ? null : createID(json.item.client, json.item.clock), json.assoc == null ? 0 : json.assoc);
+  const createRelativePositionFromJSON = json => new RelativePosition(json.type == null ? null : createID(json.type.client, json.type.clock), json.tname ?? null, json.item == null ? null : createID(json.item.client, json.item.clock), json.assoc == null ? 0 : json.assoc);
 
   class AbsolutePosition {
     /**
@@ -4620,6 +4650,18 @@
   };
 
   /**
+   * @param {StructStore} store
+   * @param {ID} id
+   */
+  const getItemWithOffset = (store, id) => {
+    const item = getItem(store, id);
+    const diff = id.clock - item.id.clock;
+    return {
+      item, diff
+    }
+  };
+
+  /**
    * Transform a relative position to an absolute position.
    *
    * If you want to share the relative position with other users, you should set
@@ -4649,7 +4691,7 @@
       if (getState(store, rightID.client) <= rightID.clock) {
         return null
       }
-      const res = followUndoneDeletions ? followRedone(store, rightID) : { item: getItem(store, rightID), diff: 0 };
+      const res = followUndoneDeletions ? followRedone(store, rightID) : getItemWithOffset(store, rightID);
       const right = res.item;
       if (!(right instanceof Item$1)) {
         return null
@@ -5195,7 +5237,7 @@
    */
   const tryMergeDeleteSet = (ds, store) => {
     // try to merge deleted / gc'd items
-    // merge from right to left for better efficiecy and so we don't miss any merge targets
+    // merge from right to left for better efficiency and so we don't miss any merge targets
     ds.clients.forEach((deleteItems, client) => {
       const structs = /** @type {Array<GC|Item>} */ (store.clients.get(client));
       for (let di = deleteItems.length - 1; di >= 0; di--) {
@@ -5424,7 +5466,7 @@
    */
   const clearUndoManagerStackItem = (tr, um, stackItem) => {
     iterateDeletedStructs(tr, stackItem.deletions, item => {
-      if (item instanceof Item$1 && um.scope.some(type => isParentOf(type, item))) {
+      if (item instanceof Item$1 && um.scope.some(type => type === tr.doc || isParentOf(/** @type {AbstractType<any>} */ (type), item))) {
         keepItem(item, false);
       }
     });
@@ -5466,7 +5508,7 @@
               }
               struct = item;
             }
-            if (!struct.deleted && scope.some(type => isParentOf(type, /** @type {Item} */ (struct)))) {
+            if (!struct.deleted && scope.some(type => type === transaction.doc || isParentOf(/** @type {AbstractType<any>} */ (type), /** @type {Item} */ (struct)))) {
               itemsToDelete.push(struct);
             }
           }
@@ -5474,7 +5516,7 @@
         iterateDeletedStructs(transaction, stackItem.deletions, struct => {
           if (
             struct instanceof Item$1 &&
-            scope.some(type => isParentOf(type, struct)) &&
+            scope.some(type => type === transaction.doc || isParentOf(/** @type {AbstractType<any>} */ (type), struct)) &&
             // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.
             !isDeleted(stackItem.insertions, struct.id)
           ) {
@@ -5503,12 +5545,13 @@
       });
       _tr = transaction;
     }, undoManager);
-    if (undoManager.currStackItem != null) {
+    const res = undoManager.currStackItem;
+    if (res != null) {
       const changedParentTypes = _tr.changedParentTypes;
-      undoManager.emit('stack-item-popped', [{ stackItem: undoManager.currStackItem, type: eventType, changedParentTypes, origin: undoManager }, undoManager]);
+      undoManager.emit('stack-item-popped', [{ stackItem: res, type: eventType, changedParentTypes, origin: undoManager }, undoManager]);
       undoManager.currStackItem = null;
     }
-    return undoManager.currStackItem
+    return res
   };
 
   /**
@@ -5543,7 +5586,7 @@
    */
   class UndoManager extends ObservableV2 {
     /**
-     * @param {AbstractType<any>|Array<AbstractType<any>>} typeScope Accepts either a single type, or an array of types
+     * @param {Doc|AbstractType<any>|Array<AbstractType<any>>} typeScope Limits the scope of the UndoManager. If this is set to a ydoc instance, all changes on that ydoc will be undone. If set to a specific type, only changes on that type or its children will be undone. Also accepts an array of types.
      * @param {UndoManagerOptions} options
      */
     constructor (typeScope, {
@@ -5552,11 +5595,11 @@
       deleteFilter = () => true,
       trackedOrigins = new Set([null]),
       ignoreRemoteMapChanges = false,
-      doc = /** @type {Doc} */ (isArray(typeScope) ? typeScope[0].doc : typeScope.doc)
+      doc = /** @type {Doc} */ (isArray(typeScope) ? typeScope[0].doc : typeScope instanceof Doc ? typeScope : typeScope.doc)
     } = {}) {
       super();
       /**
-       * @type {Array<AbstractType<any>>}
+       * @type {Array<AbstractType<any> | Doc>}
        */
       this.scope = [];
       this.doc = doc;
@@ -5596,7 +5639,7 @@
         // Only track certain transactions
         if (
           !this.captureTransaction(transaction) ||
-          !this.scope.some(type => transaction.changedParentTypes.has(type)) ||
+          !this.scope.some(type => transaction.changedParentTypes.has(/** @type {AbstractType<any>} */ (type)) || type === this.doc) ||
           (!this.trackedOrigins.has(transaction.origin) && (!transaction.origin || !this.trackedOrigins.has(transaction.origin.constructor)))
         ) {
           return
@@ -5635,7 +5678,7 @@
         }
         // make sure that deleted structs are not gc'd
         iterateDeletedStructs(transaction, transaction.deleteSet, /** @param {Item|GC} item */ item => {
-          if (item instanceof Item$1 && this.scope.some(type => isParentOf(type, item))) {
+          if (item instanceof Item$1 && this.scope.some(type => type === transaction.doc || isParentOf(/** @type {AbstractType<any>} */ (type), item))) {
             keepItem(item, true);
           }
         });
@@ -5656,13 +5699,17 @@
     }
 
     /**
-     * @param {Array<AbstractType<any>> | AbstractType<any>} ytypes
+     * Extend the scope.
+     *
+     * @param {Array<AbstractType<any> | Doc> | AbstractType<any> | Doc} ytypes
      */
     addToScope (ytypes) {
+      const tmpSet = new Set(this.scope);
       ytypes = isArray(ytypes) ? ytypes : [ytypes];
       ytypes.forEach(ytype => {
-        if (this.scope.every(yt => yt !== ytype)) {
-          if (ytype.doc !== this.doc) warn('[yjs#509] Not same Y.Doc'); // use MultiDocUndoManager instead. also see https://github.com/yjs/yjs/issues/509
+        if (!tmpSet.has(ytype)) {
+          tmpSet.add(ytype);
+          if (ytype instanceof AbstractType ? ytype.doc !== this.doc : ytype !== this.doc) warn('[yjs#509] Not same Y.Doc'); // use MultiDocUndoManager instead. also see https://github.com/yjs/yjs/issues/509
           this.scope.push(ytype);
         }
       });
@@ -6436,8 +6483,8 @@
         let i = 0;
         let c = /** @type {AbstractType<any>} */ (child._item.parent)._start;
         while (c !== child._item && c !== null) {
-          if (!c.deleted) {
-            i++;
+          if (!c.deleted && c.countable) {
+            i += c.length;
           }
           c = c.right;
         }
@@ -6447,6 +6494,11 @@
     }
     return path
   };
+
+  /**
+   * https://docs.yjs.dev/getting-started/working-with-shared-types#caveats
+   */
+  const warnPrematureAccess = () => { warn('Invalid access: Add Yjs type to a document before reading data.'); };
 
   const maxSearchMarker = 80;
 
@@ -6579,11 +6631,11 @@
     //   }
     // }
     // if (marker) {
-    //   if (window.lengthes == null) {
-    //     window.lengthes = []
-    //     window.getLengthes = () => window.lengthes.sort((a, b) => a - b)
+    //   if (window.lengths == null) {
+    //     window.lengths = []
+    //     window.getLengths = () => window.lengths.sort((a, b) => a - b)
     //   }
-    //   window.lengthes.push(marker.index - pindex)
+    //   window.lengths.push(marker.index - pindex)
     //   console.log('distance', marker.index - pindex, 'len', p && p.parent.length)
     // }
     if (marker !== null && abs(marker.index - pindex) < /** @type {YText|YArray<any>} */ (p.parent).length / maxSearchMarker) {
@@ -6822,6 +6874,7 @@
    * @function
    */
   const typeListSlice = (type, start, end) => {
+    type.doc ?? warnPrematureAccess();
     if (start < 0) {
       start = type._length + start;
     }
@@ -6857,6 +6910,7 @@
    * @function
    */
   const typeListToArray = type => {
+    type.doc ?? warnPrematureAccess();
     const cs = [];
     let n = type._start;
     while (n !== null) {
@@ -6906,6 +6960,7 @@
   const typeListForEach = (type, f) => {
     let index = 0;
     let n = type._start;
+    type.doc ?? warnPrematureAccess();
     while (n !== null) {
       if (n.countable && !n.deleted) {
         const c = n.content.getContent();
@@ -6995,6 +7050,7 @@
    * @function
    */
   const typeListGet = (type, index) => {
+    type.doc ?? warnPrematureAccess();
     const marker = findMarker(type, index);
     let n = type._start;
     if (marker !== null) {
@@ -7129,7 +7185,7 @@
 
   /**
    * Pushing content is special as we generally want to push after the last item. So we don't have to update
-   * the serach marker.
+   * the search marker.
    *
    * @param {Transaction} transaction
    * @param {AbstractType<any>} parent
@@ -7235,6 +7291,8 @@
         case Boolean:
         case Array:
         case String:
+        case Date:
+        case BigInt:
           content = new ContentAny([value]);
           break
         case Uint8Array:
@@ -7263,6 +7321,7 @@
    * @function
    */
   const typeMapGet = (parent, key) => {
+    parent.doc ?? warnPrematureAccess();
     const val = parent._map.get(key);
     return val !== undefined && !val.deleted ? val.content.getContent()[val.length - 1] : undefined
   };
@@ -7279,6 +7338,7 @@
      * @type {Object<string,any>}
      */
     const res = {};
+    parent.doc ?? warnPrematureAccess();
     parent._map.forEach((value, key) => {
       if (!value.deleted) {
         res[key] = value.content.getContent()[value.length - 1];
@@ -7296,6 +7356,7 @@
    * @function
    */
   const typeMapHas = (parent, key) => {
+    parent.doc ?? warnPrematureAccess();
     const val = parent._map.get(key);
     return val !== undefined && !val.deleted
   };
@@ -7329,13 +7390,16 @@
   };
 
   /**
-   * @param {Map<string,Item>} map
+   * @param {AbstractType<any> & { _map: Map<string, Item> }} type
    * @return {IterableIterator<Array<any>>}
    *
    * @private
    * @function
    */
-  const createMapIterator = map => iteratorFilter(map.entries(), /** @param {any} entry */ entry => !entry[1].deleted);
+  const createMapIterator = type => {
+    type.doc ?? warnPrematureAccess();
+    return iteratorFilter(type._map.entries(), /** @param {any} entry */ entry => !entry[1].deleted)
+  };
 
   /**
    * @module YArray
@@ -7347,16 +7411,7 @@
    * @template T
    * @extends YEvent<YArray<T>>
    */
-  class YArrayEvent extends YEvent {
-    /**
-     * @param {YArray<T>} yarray The changed type
-     * @param {Transaction} transaction The transaction object
-     */
-    constructor (yarray, transaction) {
-      super(yarray, transaction);
-      this._transaction = transaction;
-    }
-  }
+  class YArrayEvent extends YEvent {}
 
   /**
    * A shared Array implementation.
@@ -7435,7 +7490,8 @@
     }
 
     get length () {
-      return this._prelimContent === null ? this._length : this._prelimContent.length
+      this.doc ?? warnPrematureAccess();
+      return this._length
     }
 
     /**
@@ -7493,9 +7549,9 @@
     }
 
     /**
-     * Preppends content to this YArray.
+     * Prepends content to this YArray.
      *
-     * @param {Array<T>} content Array of content to preppend.
+     * @param {Array<T>} content Array of content to prepend.
      */
     unshift (content) {
       this.insert(0, content);
@@ -7537,7 +7593,8 @@
     }
 
     /**
-     * Transforms this YArray to a JavaScript Array.
+     * Returns a portion of this YArray into a JavaScript Array selected
+     * from start to end (end not included).
      *
      * @param {number} [start]
      * @param {number} [end]
@@ -7709,6 +7766,7 @@
      * @return {Object<string,any>}
      */
     toJSON () {
+      this.doc ?? warnPrematureAccess();
       /**
        * @type {Object<string,MapType>}
        */
@@ -7728,7 +7786,7 @@
      * @return {number}
      */
     get size () {
-      return [...createMapIterator(this._map)].length
+      return [...createMapIterator(this)].length
     }
 
     /**
@@ -7737,7 +7795,7 @@
      * @return {IterableIterator<string>}
      */
     keys () {
-      return iteratorMap(createMapIterator(this._map), /** @param {any} v */ v => v[0])
+      return iteratorMap(createMapIterator(this), /** @param {any} v */ v => v[0])
     }
 
     /**
@@ -7746,7 +7804,7 @@
      * @return {IterableIterator<MapType>}
      */
     values () {
-      return iteratorMap(createMapIterator(this._map), /** @param {any} v */ v => v[1].content.getContent()[v[1].length - 1])
+      return iteratorMap(createMapIterator(this), /** @param {any} v */ v => v[1].content.getContent()[v[1].length - 1])
     }
 
     /**
@@ -7755,7 +7813,7 @@
      * @return {IterableIterator<[string, MapType]>}
      */
     entries () {
-      return iteratorMap(createMapIterator(this._map), /** @param {any} v */ v => /** @type {any} */ ([v[0], v[1].content.getContent()[v[1].length - 1]]))
+      return iteratorMap(createMapIterator(this), /** @param {any} v */ v => /** @type {any} */ ([v[0], v[1].content.getContent()[v[1].length - 1]]))
     }
 
     /**
@@ -7764,6 +7822,7 @@
      * @param {function(MapType,string,YMap<MapType>):void} f A function to execute on every element of this YArray.
      */
     forEach (f) {
+      this.doc ?? warnPrematureAccess();
       this._map.forEach((item, key) => {
         if (!item.deleted) {
           f(item.content.getContent()[item.length - 1], key, this);
@@ -8312,7 +8371,7 @@
   };
 
   /**
-   * This will be called by the transction once the event handlers are called to potentially cleanup
+   * This will be called by the transaction once the event handlers are called to potentially cleanup
    * formatting attributes.
    *
    * @param {Transaction} transaction
@@ -8402,7 +8461,7 @@
 
   /**
    * The Quill Delta format represents changes on a text document with
-   * formatting information. For mor information visit {@link https://quilljs.com/docs/delta/|Quill Delta}
+   * formatting information. For more information visit {@link https://quilljs.com/docs/delta/|Quill Delta}
    *
    * @example
    *   {
@@ -8710,6 +8769,7 @@
      * @type {number}
      */
     get length () {
+      this.doc ?? warnPrematureAccess();
       return this._length
     }
 
@@ -8766,6 +8826,7 @@
      * @public
      */
     toString () {
+      this.doc ?? warnPrematureAccess();
       let str = '';
       /**
        * @type {Item|null}
@@ -8793,7 +8854,7 @@
     /**
      * Apply a {@link Delta} on this shared YText type.
      *
-     * @param {any} delta The changes to apply on this element.
+     * @param {Array<any>} delta The changes to apply on this element.
      * @param {object}  opts
      * @param {boolean} [opts.sanitize] Sanitize input delta. Removes ending newlines if set to true.
      *
@@ -8839,6 +8900,7 @@
      * @public
      */
     toDelta (snapshot, prevSnapshot, computeYChange) {
+      this.doc ?? warnPrematureAccess();
       /**
        * @type{Array<any>}
        */
@@ -9176,6 +9238,7 @@
        */
       this._currentNode = /** @type {Item} */ (root._start);
       this._firstCall = true;
+      root.doc ?? warnPrematureAccess();
     }
 
     [Symbol.iterator] () {
@@ -9204,8 +9267,12 @@
           } else {
             // walk right or up in the tree
             while (n !== null) {
-              if (n.right !== null) {
-                n = n.right;
+              /**
+               * @type {Item | null}
+               */
+              const nxt = n.next;
+              if (nxt !== null) {
+                n = nxt;
                 break
               } else if (n.parent === this._root) {
                 n = null;
@@ -9287,6 +9354,7 @@
     }
 
     get length () {
+      this.doc ?? warnPrematureAccess();
       return this._prelimContent === null ? this._length : this._prelimContent.length
     }
 
@@ -9490,9 +9558,9 @@
     }
 
     /**
-     * Preppends content to this YArray.
+     * Prepends content to this YArray.
      *
-     * @param {Array<YXmlElement|YXmlText>} content Array of content to preppend.
+     * @param {Array<YXmlElement|YXmlText>} content Array of content to prepend.
      */
     unshift (content) {
       this.insert(0, content);
@@ -9509,7 +9577,8 @@
     }
 
     /**
-     * Transforms this YArray to a JavaScript Array.
+     * Returns a portion of this YXmlFragment into a JavaScript Array selected
+     * from start to end (end not included).
      *
      * @param {number} [start]
      * @param {number} [end]
@@ -9806,7 +9875,7 @@
      * @param {YXmlElement|YXmlText|YXmlFragment} target The target on which the event is created.
      * @param {Set<string|null>} subs The set of changed attributes. `null` is included if the
      *                   child list changed.
-     * @param {Transaction} transaction The transaction instance with wich the
+     * @param {Transaction} transaction The transaction instance with which the
      *                                  change was created.
      */
     constructor (target, subs, transaction) {
@@ -10066,7 +10135,7 @@
      * This method is already assuming that `this.id.clock + this.length === this.id.clock`.
      * Also this method does *not* remove right from StructStore!
      * @param {AbstractStruct} right
-     * @return {boolean} wether this merged with right
+     * @return {boolean} whether this merged with right
      */
     mergeWith (right) {
       return false
@@ -10769,6 +10838,8 @@
     return new ContentJSON(cs)
   };
 
+  const isDevMode = getVariable('node_env') === 'development';
+
   class ContentAny {
     /**
      * @param {Array<any>} arr
@@ -10778,6 +10849,7 @@
        * @type {Array<any>}
        */
       this.arr = arr;
+      isDevMode && deepFreeze(arr);
     }
 
     /**
@@ -11506,8 +11578,7 @@
         if (this.left && this.left.constructor === Item$1) {
           this.parent = this.left.parent;
           this.parentSub = this.left.parentSub;
-        }
-        if (this.right && this.right.constructor === Item$1) {
+        } else if (this.right && this.right.constructor === Item$1) {
           this.parent = this.right.parent;
           this.parentSub = this.right.parentSub;
         }
@@ -12447,10 +12518,9 @@
   const encodeQueryParams = params =>
     map(params, (val, key) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`).join('&');
 
-  /*
-  copied from https://github.com/rlingineni/y-serverless/blob/main/client/src/services/y-websocket.js
-  to support base64
-  */
+  /**
+   * @module provider/websocket
+   */
 
   const messageSync = 0;
   const messageQueryAwareness = 3;
@@ -12614,26 +12684,22 @@
       provider.wsconnecting = true;
       provider.wsconnected = false;
       provider.synced = false;
-      const { encode, decode } = provider;
+      const { txEncode, txDecode } = provider;
 
       websocket.onmessage = (event) => {
-        console.log('ws.onmessage', event);
         provider.wsLastMessageReceived = getUnixTime();
-        const encoder = readMessage(provider, decode(event.data), true);
+        const encoder = readMessage(provider, txDecode(event.data), true);
         if (length$1(encoder) > 1) {
-          websocket.send(encode(toUint8Array(encoder)));
+          websocket.send(txEncode(toUint8Array(encoder)));
         }
       };
       websocket.onerror = (event) => {
-        console.log('ws.onerror', event);
         provider.emit('connection-error', [event, provider]);
       };
       websocket.onclose = (event) => {
-        console.log('ws.onclose', event);
         closeWebsocketConnection(provider, websocket, event);
       };
       websocket.onopen = () => {
-        console.log('ws.onopen');
         provider.wsLastMessageReceived = getUnixTime();
         provider.wsconnecting = false;
         provider.wsconnected = true;
@@ -12645,7 +12711,7 @@
         const encoder = createEncoder();
         writeVarUint(encoder, messageSync);
         writeSyncStep1(encoder, provider.doc);
-        websocket.send(encode(toUint8Array(encoder)));
+        websocket.send(txEncode(toUint8Array(encoder)));
         // broadcast local awareness state
         if (provider.awareness.getLocalState() !== null) {
           const encoderAwarenessState = createEncoder();
@@ -12656,7 +12722,7 @@
               provider.doc.clientID
             ])
           );
-          websocket.send(encode(toUint8Array(encoderAwarenessState)));
+          websocket.send(txEncode(toUint8Array(encoderAwarenessState)));
         }
       };
       provider.emit('status', [{
@@ -12667,13 +12733,12 @@
 
   /**
    * @param {WebsocketProvider} provider
-   * @param {ArrayBuffer} buf
+   * @param {Uint8Array} buf
    */
   const broadcastMessage = (provider, buf) => {
     const ws = provider.ws;
     if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
-      // TODO: guard against too long arrays
-      ws.send(provider.useBase64 ? btoa(String.fromCharCode(...new Uint8Array(buf))) : buf);
+      ws.send(provider.txEncode(buf));
     }
     if (provider.bcconnected) {
       publish(provider.bcChannel, buf, provider);
@@ -12707,6 +12772,7 @@
      * @param {number} [opts.resyncInterval] Request server state every `resyncInterval` milliseconds
      * @param {number} [opts.maxBackoffTime] Maximum amount of time to wait before trying to reconnect (we try to reconnect using exponential backoff)
      * @param {boolean} [opts.disableBc] Disable cross-tab BroadcastChannel communication
+     * @param {boolean} [opts.useBase64] Enable base64 transport encoding and decoding
      */
     constructor (serverUrl, roomname, doc, {
       connect = true,
@@ -12717,7 +12783,7 @@
       resyncInterval = -1,
       maxBackoffTime = 2500,
       disableBc = false,
-      useBase64 = false,
+      useBase64 = false
     } = {}) {
       super();
       // ensure that serverUrl does not end with /
@@ -12745,10 +12811,10 @@
       this.wsUnsuccessfulReconnects = 0;
       this.messageHandlers = messageHandlers.slice();
       this.useBase64 = useBase64;
-      this.decode = useBase64
+      this.txDecode = useBase64
         ? fromBase64
         : (data) => new Uint8Array(data);
-      this.encode = useBase64
+      this.txEncode = useBase64
         ? toBase64
         : (data) => data;
 
@@ -12778,7 +12844,7 @@
             const encoder = createEncoder();
             writeVarUint(encoder, messageSync);
             writeSyncStep1(encoder, doc);
-            this.ws.send(this.encode(toUint8Array(encoder)));
+            this.ws.send(this.txEncode(toUint8Array(encoder)));
           }
         }, resyncInterval));
       }
@@ -13167,7 +13233,7 @@
       */
       constructor(
       /**
-      @internal
+      The child nodes in this fragment.
       */
       content, size) {
           this.content = content;
@@ -13369,9 +13435,9 @@
       /**
       Find the index and inner offset corresponding to a given relative
       position in this fragment. The result object will be reused
-      (overwritten) the next time the function is called. (Not public.)
+      (overwritten) the next time the function is called. @internal
       */
-      findIndex(pos, round = -1) {
+      findIndex(pos) {
           if (pos == 0)
               return retIndex(0, pos);
           if (pos == this.size)
@@ -13381,7 +13447,7 @@
           for (let i = 0, curPos = 0;; i++) {
               let cur = this.child(i), end = curPos + cur.nodeSize;
               if (end >= pos) {
-                  if (end == pos || round > 0)
+                  if (end == pos)
                       return retIndex(i + 1, end);
                   return retIndex(i, curPos);
               }
@@ -13602,7 +13668,9 @@
           let type = schema.marks[json.type];
           if (!type)
               throw new RangeError(`There is no mark type ${json.type} in this schema`);
-          return type.create(json.attrs);
+          let mark = type.create(json.attrs);
+          type.checkAttrs(mark.attrs);
+          return mark;
       }
       /**
       Test whether two sets of marks are identical.
@@ -13779,7 +13847,7 @@
               return null;
           return content.cut(0, dist).append(insert).append(content.cut(dist));
       }
-      let inner = insertInto(child.content, dist - offset - 1, insert);
+      let inner = insertInto(child.content, dist - offset - 1, insert, child);
       return inner && content.replaceChild(index, child.copy(inner));
   }
   function replace($from, $to, slice) {
@@ -14160,17 +14228,29 @@
       @internal
       */
       static resolveCached(doc, pos) {
-          for (let i = 0; i < resolveCache.length; i++) {
-              let cached = resolveCache[i];
-              if (cached.pos == pos && cached.doc == doc)
-                  return cached;
+          let cache = resolveCache.get(doc);
+          if (cache) {
+              for (let i = 0; i < cache.elts.length; i++) {
+                  let elt = cache.elts[i];
+                  if (elt.pos == pos)
+                      return elt;
+              }
           }
-          let result = resolveCache[resolveCachePos] = ResolvedPos.resolve(doc, pos);
-          resolveCachePos = (resolveCachePos + 1) % resolveCacheSize;
+          else {
+              resolveCache.set(doc, cache = new ResolveCache);
+          }
+          let result = cache.elts[cache.i] = ResolvedPos.resolve(doc, pos);
+          cache.i = (cache.i + 1) % resolveCacheSize;
           return result;
       }
   }
-  let resolveCache = [], resolveCachePos = 0, resolveCacheSize = 12;
+  class ResolveCache {
+      constructor() {
+          this.elts = [];
+          this.i = 0;
+      }
+  }
+  const resolveCacheSize = 12, resolveCache = new WeakMap();
   /**
   Represents a flat range of content, i.e. one that starts and
   ends in the same node.
@@ -14237,7 +14317,7 @@
   tree shape like this (without back pointers) makes easy.
 
   **Do not** directly mutate the properties of a `Node` object. See
-  [the guide](/docs/guide/#doc) for more information.
+  [the guide](https://prosemirror.net/docs/guide/#doc) for more information.
   */
   class Node$1 {
       /**
@@ -14267,8 +14347,12 @@
           this.content = content || Fragment.empty;
       }
       /**
+      The array of this node's child nodes.
+      */
+      get children() { return this.content.content; }
+      /**
       The size of this node, as defined by the integer-based [indexing
-      scheme](/docs/guide/#doc.indexing). For text nodes, this is the
+      scheme](https://prosemirror.net/docs/guide/#doc.indexing). For text nodes, this is the
       amount of characters. For other leaf nodes, it is one. For
       non-leaf nodes, it is the size of the content plus two (the
       start and end token).
@@ -14326,7 +14410,7 @@
       `blockSeparator` is given, it will be inserted to separate text
       from different block nodes. If `leafText` is given, it'll be
       inserted for every non-text leaf node encountered, otherwise
-      [`leafText`](https://prosemirror.net/docs/ref/#model.NodeSpec^leafText) will be used.
+      [`leafText`](https://prosemirror.net/docs/ref/#model.NodeSpec.leafText) will be used.
       */
       textBetween(from, to, blockSeparator, leafText) {
           return this.content.textBetween(from, to, blockSeparator, leafText);
@@ -14570,13 +14654,17 @@
       }
       /**
       Check whether this node and its descendants conform to the
-      schema, and raise error when they do not.
+      schema, and raise an exception when they do not.
       */
       check() {
           this.type.checkContent(this.content);
+          this.type.checkAttrs(this.attrs);
           let copy = Mark.none;
-          for (let i = 0; i < this.marks.length; i++)
-              copy = this.marks[i].addToSet(copy);
+          for (let i = 0; i < this.marks.length; i++) {
+              let mark = this.marks[i];
+              mark.type.checkAttrs(mark.attrs);
+              copy = mark.addToSet(copy);
+          }
           if (!Mark.sameSet(copy, this.marks))
               throw new RangeError(`Invalid collection of marks for node ${this.type.name}: ${this.marks.map(m => m.type.name)}`);
           this.content.forEach(node => node.check());
@@ -14602,7 +14690,7 @@
       static fromJSON(schema, json) {
           if (!json)
               throw new RangeError("Invalid input for Node.fromJSON");
-          let marks = null;
+          let marks = undefined;
           if (json.marks) {
               if (!Array.isArray(json.marks))
                   throw new RangeError("Invalid mark data for Node.fromJSON");
@@ -14614,7 +14702,9 @@
               return schema.text(json.text, marks);
           }
           let content = Fragment.fromJSON(schema, json.content);
-          return schema.nodeType(json.type).create(json.attrs, content, marks);
+          let node = schema.nodeType(json.type).create(json.attrs, content, marks);
+          node.type.checkAttrs(node.attrs);
+          return node;
       }
   }
   Node$1.prototype.text = undefined;
@@ -14927,7 +15017,7 @@
       let result = [];
       for (let typeName in types) {
           let type = types[typeName];
-          if (type.groups.indexOf(name) > -1)
+          if (type.isInGroup(name))
               result.push(type);
       }
       if (result.length == 0)
@@ -14956,16 +15046,14 @@
           stream.err("Unexpected token '" + stream.next + "'");
       }
   }
-  /**
-  Construct an NFA from an expression as returned by the parser. The
-  NFA is represented as an array of states, which are themselves
-  arrays of edges, which are `{term, to}` objects. The first state is
-  the entry state and the last node is the success state.
-
-  Note that unlike typical NFAs, the edge ordering in this one is
-  significant, in that it is used to contruct filler content when
-  necessary.
-  */
+  // Construct an NFA from an expression as returned by the parser. The
+  // NFA is represented as an array of states, which are themselves
+  // arrays of edges, which are `{term, to}` objects. The first state is
+  // the entry state and the last node is the success state.
+  //
+  // Note that unlike typical NFAs, the edge ordering in this one is
+  // significant, in that it is used to contruct filler content when
+  // necessary.
   function nfa(expr) {
       let nfa = [[]];
       connect(compile(expr, 0), node());
@@ -15131,11 +15219,21 @@
       }
       return built;
   }
-  function initAttrs(attrs) {
+  function checkAttrs(attrs, values, type, name) {
+      for (let name in values)
+          if (!(name in attrs))
+              throw new RangeError(`Unsupported attribute ${name} for ${type} of type ${name}`);
+      for (let name in attrs) {
+          let attr = attrs[name];
+          if (attr.validate)
+              attr.validate(values[name]);
+      }
+  }
+  function initAttrs(typeName, attrs) {
       let result = Object.create(null);
       if (attrs)
           for (let name in attrs)
-              result[name] = new Attribute(attrs[name]);
+              result[name] = new Attribute(typeName, name, attrs[name]);
       return result;
   }
   /**
@@ -15170,7 +15268,7 @@
           */
           this.markSet = null;
           this.groups = spec.group ? spec.group.split(" ") : [];
-          this.attrs = initAttrs(spec.attrs);
+          this.attrs = initAttrs(name, spec.attrs);
           this.defaultAttrs = defaultAttrs(this.attrs);
           this.contentMatch = null;
           this.inlineContent = null;
@@ -15195,6 +15293,13 @@
       directly editable content.
       */
       get isAtom() { return this.isLeaf || !!this.spec.atom; }
+      /**
+      Return true when this node type is part of the given
+      [group](https://prosemirror.net/docs/ref/#model.NodeSpec.group).
+      */
+      isInGroup(group) {
+          return this.groups.indexOf(group) > -1;
+      }
       /**
       The node type's [whitespace](https://prosemirror.net/docs/ref/#model.NodeSpec.whitespace) option.
       */
@@ -15274,7 +15379,7 @@
       }
       /**
       Returns true if the given fragment is valid content for this node
-      type with the given attributes.
+      type.
       */
       validContent(content) {
           let result = this.contentMatch.matchFragment(content);
@@ -15293,6 +15398,12 @@
       checkContent(content) {
           if (!this.validContent(content))
               throw new RangeError(`Invalid content for node ${this.name}: ${content.toString().slice(0, 50)}`);
+      }
+      /**
+      @internal
+      */
+      checkAttrs(attrs) {
+          checkAttrs(this.attrs, attrs, "node", this.name);
       }
       /**
       Check whether the given mark type is allowed in this node.
@@ -15345,11 +15456,20 @@
           return result;
       }
   }
+  function validateType(typeName, attrName, type) {
+      let types = type.split("|");
+      return (value) => {
+          let name = value === null ? "null" : typeof value;
+          if (types.indexOf(name) < 0)
+              throw new RangeError(`Expected value of type ${types} for attribute ${attrName} on type ${typeName}, got ${name}`);
+      };
+  }
   // Attribute descriptors
   class Attribute {
-      constructor(options) {
+      constructor(typeName, attrName, options) {
           this.hasDefault = Object.prototype.hasOwnProperty.call(options, "default");
           this.default = options.default;
+          this.validate = typeof options.validate == "string" ? validateType(typeName, attrName, options.validate) : options.validate;
       }
       get isRequired() {
           return !this.hasDefault;
@@ -15387,7 +15507,7 @@
           this.rank = rank;
           this.schema = schema;
           this.spec = spec;
-          this.attrs = initAttrs(spec.attrs);
+          this.attrs = initAttrs(name, spec.attrs);
           this.excluded = null;
           let defaults = defaultAttrs(this.attrs);
           this.instance = defaults ? new Mark(this, defaults) : null;
@@ -15429,6 +15549,12 @@
           for (let i = 0; i < set.length; i++)
               if (set[i].type == this)
                   return set[i];
+      }
+      /**
+      @internal
+      */
+      checkAttrs(attrs) {
+          checkAttrs(this.attrs, attrs, "mark", this.name);
       }
       /**
       Queries whether a given mark type is
@@ -15494,8 +15620,8 @@
               let type = this.marks[prop], excl = type.spec.excludes;
               type.excluded = excl == null ? [type] : excl == "" ? [] : gatherMarks(this, excl.split(" "));
           }
-          this.nodeFromJSON = this.nodeFromJSON.bind(this);
-          this.markFromJSON = this.markFromJSON.bind(this);
+          this.nodeFromJSON = json => Node$1.fromJSON(this, json);
+          this.markFromJSON = json => Mark.fromJSON(this, json);
           this.topNodeType = this.nodes[this.spec.topNode || "doc"];
           this.cached.wrappings = Object.create(null);
       }
@@ -15529,20 +15655,6 @@
           if (typeof type == "string")
               type = this.marks[type];
           return type.create(attrs);
-      }
-      /**
-      Deserialize a node from its JSON representation. This method is
-      bound.
-      */
-      nodeFromJSON(json) {
-          return Node$1.fromJSON(this, json);
-      }
-      /**
-      Deserialize a mark from its JSON representation. This method is
-      bound.
-      */
-      markFromJSON(json) {
-          return Mark.fromJSON(this, json);
       }
       /**
       @internal
@@ -15606,11 +15718,17 @@
           @internal
           */
           this.styles = [];
+          let matchedStyles = this.matchedStyles = [];
           rules.forEach(rule => {
-              if (isTagRule(rule))
+              if (isTagRule(rule)) {
                   this.tags.push(rule);
-              else if (isStyleRule(rule))
+              }
+              else if (isStyleRule(rule)) {
+                  let prop = /[^=]*/.exec(rule.style)[0];
+                  if (matchedStyles.indexOf(prop) < 0)
+                      matchedStyles.push(prop);
                   this.styles.push(rule);
+              }
           });
           // Only normalize list elements when lists in the schema can't directly contain themselves
           this.normalizeLists = !this.tags.some(r => {
@@ -15625,7 +15743,7 @@
       */
       parse(dom, options = {}) {
           let context = new ParseContext(this, options, false);
-          context.addAll(dom, options.from, options.to);
+          context.addAll(dom, Mark.none, options.from, options.to);
           return context.finish();
       }
       /**
@@ -15638,7 +15756,7 @@
       */
       parseSlice(dom, options = {}) {
           let context = new ParseContext(this, options, true);
-          context.addAll(dom, options.from, options.to);
+          context.addAll(dom, Mark.none, options.from, options.to);
           return Slice.maxOpen(context.finish());
       }
       /**
@@ -15720,7 +15838,7 @@
       /**
       Construct a DOM parser using the parsing rules listed in a
       schema's [node specs](https://prosemirror.net/docs/ref/#model.NodeSpec.parseDOM), reordered by
-      [priority](https://prosemirror.net/docs/ref/#model.ParseRule.priority).
+      [priority](https://prosemirror.net/docs/ref/#model.GenericParseRule.priority).
       */
       static fromSchema(schema) {
           return schema.cached.domParser ||
@@ -15747,22 +15865,15 @@
       return type && type.whitespace == "pre" ? OPT_PRESERVE_WS | OPT_PRESERVE_WS_FULL : base & ~OPT_OPEN_LEFT;
   }
   class NodeContext {
-      constructor(type, attrs, 
-      // Marks applied to this node itself
-      marks, 
-      // Marks that can't apply here, but will be used in children if possible
-      pendingMarks, solid, match, options) {
+      constructor(type, attrs, marks, solid, match, options) {
           this.type = type;
           this.attrs = attrs;
           this.marks = marks;
-          this.pendingMarks = pendingMarks;
           this.solid = solid;
           this.options = options;
           this.content = [];
           // Marks applied to the node's children
           this.activeMarks = Mark.none;
-          // Nested Marks with same type
-          this.stashMarks = [];
           this.match = match || (options & OPT_OPEN_LEFT ? null : type.contentMatch);
       }
       findWrapping(node) {
@@ -15802,21 +15913,6 @@
               content = content.append(this.match.fillBefore(Fragment.empty, true));
           return this.type ? this.type.create(this.attrs, content, this.marks) : content;
       }
-      popFromStashMark(mark) {
-          for (let i = this.stashMarks.length - 1; i >= 0; i--)
-              if (mark.eq(this.stashMarks[i]))
-                  return this.stashMarks.splice(i, 1)[0];
-      }
-      applyPending(nextType) {
-          for (let i = 0, pending = this.pendingMarks; i < pending.length; i++) {
-              let mark = pending[i];
-              if ((this.type ? this.type.allowsMarkType(mark.type) : markMayApply(mark.type, nextType)) &&
-                  !mark.isInSet(this.activeMarks)) {
-                  this.activeMarks = mark.addToSet(this.activeMarks);
-                  this.pendingMarks = mark.removeFromSet(this.pendingMarks);
-              }
-          }
-      }
       inlineContext(node) {
           if (this.type)
               return this.type.inlineContent;
@@ -15835,14 +15931,15 @@
           this.options = options;
           this.isOpen = isOpen;
           this.open = 0;
+          this.localPreserveWS = false;
           let topNode = options.topNode, topContext;
           let topOptions = wsOptionsFor(null, options.preserveWhitespace, 0) | (isOpen ? OPT_OPEN_LEFT : 0);
           if (topNode)
-              topContext = new NodeContext(topNode.type, topNode.attrs, Mark.none, Mark.none, true, options.topMatch || topNode.type.contentMatch, topOptions);
+              topContext = new NodeContext(topNode.type, topNode.attrs, Mark.none, true, options.topMatch || topNode.type.contentMatch, topOptions);
           else if (isOpen)
-              topContext = new NodeContext(null, null, Mark.none, Mark.none, true, null, topOptions);
+              topContext = new NodeContext(null, null, Mark.none, true, null, topOptions);
           else
-              topContext = new NodeContext(parser.schema.topNodeType, null, Mark.none, Mark.none, true, null, topOptions);
+              topContext = new NodeContext(parser.schema.topNodeType, null, Mark.none, true, null, topOptions);
           this.nodes = [topContext];
           this.find = options.findPositions;
           this.needsBlock = false;
@@ -15853,37 +15950,21 @@
       // Add a DOM node to the content. Text is inserted as text node,
       // otherwise, the node is passed to `addElement` or, if it has a
       // `style` attribute, `addElementWithStyles`.
-      addDOM(dom) {
+      addDOM(dom, marks) {
           if (dom.nodeType == 3)
-              this.addTextNode(dom);
+              this.addTextNode(dom, marks);
           else if (dom.nodeType == 1)
-              this.addElement(dom);
+              this.addElement(dom, marks);
       }
-      withStyleRules(dom, f) {
-          let style = dom.getAttribute("style");
-          if (!style)
-              return f();
-          let marks = this.readStyles(parseStyles(style));
-          if (!marks)
-              return; // A style with ignore: true
-          let [addMarks, removeMarks] = marks, top = this.top;
-          for (let i = 0; i < removeMarks.length; i++)
-              this.removePendingMark(removeMarks[i], top);
-          for (let i = 0; i < addMarks.length; i++)
-              this.addPendingMark(addMarks[i]);
-          f();
-          for (let i = 0; i < addMarks.length; i++)
-              this.removePendingMark(addMarks[i], top);
-          for (let i = 0; i < removeMarks.length; i++)
-              this.addPendingMark(removeMarks[i]);
-      }
-      addTextNode(dom) {
+      addTextNode(dom, marks) {
           let value = dom.nodeValue;
-          let top = this.top;
-          if (top.options & OPT_PRESERVE_WS_FULL ||
+          let top = this.top, preserveWS = (top.options & OPT_PRESERVE_WS_FULL) ? "full"
+              : this.localPreserveWS || (top.options & OPT_PRESERVE_WS) > 0;
+          let { schema } = this.parser;
+          if (preserveWS === "full" ||
               top.inlineContext(dom) ||
               /[^ \t\r\n\u000c]/.test(value)) {
-              if (!(top.options & OPT_PRESERVE_WS)) {
+              if (!preserveWS) {
                   value = value.replace(/[ \t\r\n\u000c]+/g, " ");
                   // If this starts with whitespace, and there is no node before it, or
                   // a hard break, or a text node that ends with whitespace, strip the
@@ -15897,14 +15978,24 @@
                           value = value.slice(1);
                   }
               }
-              else if (!(top.options & OPT_PRESERVE_WS_FULL)) {
-                  value = value.replace(/\r?\n|\r/g, " ");
-              }
-              else {
+              else if (preserveWS === "full") {
                   value = value.replace(/\r\n?/g, "\n");
               }
+              else if (schema.linebreakReplacement && /[\r\n]/.test(value) && this.top.findWrapping(schema.linebreakReplacement.create())) {
+                  let lines = value.split(/\r?\n|\r/);
+                  for (let i = 0; i < lines.length; i++) {
+                      if (i)
+                          this.insertNode(schema.linebreakReplacement.create(), marks, true);
+                      if (lines[i])
+                          this.insertNode(schema.text(lines[i]), marks, !/\S/.test(lines[i]));
+                  }
+                  value = "";
+              }
+              else {
+                  value = value.replace(/\r?\n|\r/g, " ");
+              }
               if (value)
-                  this.insertNode(this.parser.schema.text(value));
+                  this.insertNode(schema.text(value), marks, !/\S/.test(value));
               this.findInText(dom);
           }
           else {
@@ -15913,22 +16004,25 @@
       }
       // Try to find a handler for the given tag and use that to parse. If
       // none is found, the element's content nodes are added directly.
-      addElement(dom, matchAfter) {
+      addElement(dom, marks, matchAfter) {
+          let outerWS = this.localPreserveWS, top = this.top;
+          if (dom.tagName == "PRE" || /pre/.test(dom.style && dom.style.whiteSpace))
+              this.localPreserveWS = true;
           let name = dom.nodeName.toLowerCase(), ruleID;
           if (listTags.hasOwnProperty(name) && this.parser.normalizeLists)
               normalizeList(dom);
           let rule = (this.options.ruleFromNode && this.options.ruleFromNode(dom)) ||
               (ruleID = this.parser.matchTag(dom, this, matchAfter));
-          if (rule ? rule.ignore : ignoreTags.hasOwnProperty(name)) {
+          out: if (rule ? rule.ignore : ignoreTags.hasOwnProperty(name)) {
               this.findInside(dom);
-              this.ignoreFallback(dom);
+              this.ignoreFallback(dom, marks);
           }
           else if (!rule || rule.skip || rule.closeParent) {
               if (rule && rule.closeParent)
                   this.open = Math.max(0, this.open - 1);
               else if (rule && rule.skip.nodeType)
                   dom = rule.skip;
-              let sync, top = this.top, oldNeedsBlock = this.needsBlock;
+              let sync, oldNeedsBlock = this.needsBlock;
               if (blockTags.hasOwnProperty(name)) {
                   if (top.content.length && top.content[0].isInline && this.open) {
                       this.open--;
@@ -15939,92 +16033,98 @@
                       this.needsBlock = true;
               }
               else if (!dom.firstChild) {
-                  this.leafFallback(dom);
-                  return;
+                  this.leafFallback(dom, marks);
+                  break out;
               }
-              if (rule && rule.skip)
-                  this.addAll(dom);
-              else
-                  this.withStyleRules(dom, () => this.addAll(dom));
+              let innerMarks = rule && rule.skip ? marks : this.readStyles(dom, marks);
+              if (innerMarks)
+                  this.addAll(dom, innerMarks);
               if (sync)
                   this.sync(top);
               this.needsBlock = oldNeedsBlock;
           }
           else {
-              this.withStyleRules(dom, () => {
-                  this.addElementByRule(dom, rule, rule.consuming === false ? ruleID : undefined);
-              });
+              let innerMarks = this.readStyles(dom, marks);
+              if (innerMarks)
+                  this.addElementByRule(dom, rule, innerMarks, rule.consuming === false ? ruleID : undefined);
           }
+          this.localPreserveWS = outerWS;
       }
       // Called for leaf DOM nodes that would otherwise be ignored
-      leafFallback(dom) {
+      leafFallback(dom, marks) {
           if (dom.nodeName == "BR" && this.top.type && this.top.type.inlineContent)
-              this.addTextNode(dom.ownerDocument.createTextNode("\n"));
+              this.addTextNode(dom.ownerDocument.createTextNode("\n"), marks);
       }
       // Called for ignored nodes
-      ignoreFallback(dom) {
+      ignoreFallback(dom, marks) {
           // Ignored BR nodes should at least create an inline context
           if (dom.nodeName == "BR" && (!this.top.type || !this.top.type.inlineContent))
-              this.findPlace(this.parser.schema.text("-"));
+              this.findPlace(this.parser.schema.text("-"), marks, true);
       }
       // Run any style parser associated with the node's styles. Either
-      // return an array of marks, or null to indicate some of the styles
-      // had a rule with `ignore` set.
-      readStyles(styles) {
-          let add = Mark.none, remove = Mark.none;
-          for (let i = 0; i < styles.length; i += 2) {
-              for (let after = undefined;;) {
-                  let rule = this.parser.matchStyle(styles[i], styles[i + 1], this, after);
-                  if (!rule)
-                      break;
-                  if (rule.ignore)
-                      return null;
-                  if (rule.clearMark) {
-                      this.top.pendingMarks.concat(this.top.activeMarks).forEach(m => {
-                          if (rule.clearMark(m))
-                              remove = m.addToSet(remove);
-                      });
-                  }
-                  else {
-                      add = this.parser.schema.marks[rule.mark].create(rule.attrs).addToSet(add);
-                  }
-                  if (rule.consuming === false)
-                      after = rule;
-                  else
-                      break;
+      // return an updated array of marks, or null to indicate some of the
+      // styles had a rule with `ignore` set.
+      readStyles(dom, marks) {
+          let styles = dom.style;
+          // Because many properties will only show up in 'normalized' form
+          // in `style.item` (i.e. text-decoration becomes
+          // text-decoration-line, text-decoration-color, etc), we directly
+          // query the styles mentioned in our rules instead of iterating
+          // over the items.
+          if (styles && styles.length)
+              for (let i = 0; i < this.parser.matchedStyles.length; i++) {
+                  let name = this.parser.matchedStyles[i], value = styles.getPropertyValue(name);
+                  if (value)
+                      for (let after = undefined;;) {
+                          let rule = this.parser.matchStyle(name, value, this, after);
+                          if (!rule)
+                              break;
+                          if (rule.ignore)
+                              return null;
+                          if (rule.clearMark)
+                              marks = marks.filter(m => !rule.clearMark(m));
+                          else
+                              marks = marks.concat(this.parser.schema.marks[rule.mark].create(rule.attrs));
+                          if (rule.consuming === false)
+                              after = rule;
+                          else
+                              break;
+                      }
               }
-          }
-          return [add, remove];
+          return marks;
       }
       // Look up a handler for the given node. If none are found, return
       // false. Otherwise, apply it, use its return value to drive the way
       // the node's content is wrapped, and return true.
-      addElementByRule(dom, rule, continueAfter) {
-          let sync, nodeType, mark;
+      addElementByRule(dom, rule, marks, continueAfter) {
+          let sync, nodeType;
           if (rule.node) {
               nodeType = this.parser.schema.nodes[rule.node];
               if (!nodeType.isLeaf) {
-                  sync = this.enter(nodeType, rule.attrs || null, rule.preserveWhitespace);
+                  let inner = this.enter(nodeType, rule.attrs || null, marks, rule.preserveWhitespace);
+                  if (inner) {
+                      sync = true;
+                      marks = inner;
+                  }
               }
-              else if (!this.insertNode(nodeType.create(rule.attrs))) {
-                  this.leafFallback(dom);
+              else if (!this.insertNode(nodeType.create(rule.attrs), marks, dom.nodeName == "BR")) {
+                  this.leafFallback(dom, marks);
               }
           }
           else {
               let markType = this.parser.schema.marks[rule.mark];
-              mark = markType.create(rule.attrs);
-              this.addPendingMark(mark);
+              marks = marks.concat(markType.create(rule.attrs));
           }
           let startIn = this.top;
           if (nodeType && nodeType.isLeaf) {
               this.findInside(dom);
           }
           else if (continueAfter) {
-              this.addElement(dom, continueAfter);
+              this.addElement(dom, marks, continueAfter);
           }
           else if (rule.getContent) {
               this.findInside(dom);
-              rule.getContent(dom, this.parser.schema).forEach(node => this.insertNode(node));
+              rule.getContent(dom, this.parser.schema).forEach(node => this.insertNode(node, marks, false));
           }
           else {
               let contentDOM = dom;
@@ -16035,89 +16135,99 @@
               else if (rule.contentElement)
                   contentDOM = rule.contentElement;
               this.findAround(dom, contentDOM, true);
-              this.addAll(contentDOM);
+              this.addAll(contentDOM, marks);
+              this.findAround(dom, contentDOM, false);
           }
           if (sync && this.sync(startIn))
               this.open--;
-          if (mark)
-              this.removePendingMark(mark, startIn);
       }
       // Add all child nodes between `startIndex` and `endIndex` (or the
       // whole node, if not given). If `sync` is passed, use it to
       // synchronize after every block element.
-      addAll(parent, startIndex, endIndex) {
+      addAll(parent, marks, startIndex, endIndex) {
           let index = startIndex || 0;
           for (let dom = startIndex ? parent.childNodes[startIndex] : parent.firstChild, end = endIndex == null ? null : parent.childNodes[endIndex]; dom != end; dom = dom.nextSibling, ++index) {
               this.findAtPoint(parent, index);
-              this.addDOM(dom);
+              this.addDOM(dom, marks);
           }
           this.findAtPoint(parent, index);
       }
       // Try to find a way to fit the given node type into the current
       // context. May add intermediate wrappers and/or leave non-solid
       // nodes that we're in.
-      findPlace(node) {
+      findPlace(node, marks, cautious) {
           let route, sync;
-          for (let depth = this.open; depth >= 0; depth--) {
+          for (let depth = this.open, penalty = 0; depth >= 0; depth--) {
               let cx = this.nodes[depth];
               let found = cx.findWrapping(node);
-              if (found && (!route || route.length > found.length)) {
+              if (found && (!route || route.length > found.length + penalty)) {
                   route = found;
                   sync = cx;
                   if (!found.length)
                       break;
               }
-              if (cx.solid)
-                  break;
+              if (cx.solid) {
+                  if (cautious)
+                      break;
+                  penalty += 2;
+              }
           }
           if (!route)
-              return false;
+              return null;
           this.sync(sync);
           for (let i = 0; i < route.length; i++)
-              this.enterInner(route[i], null, false);
-          return true;
+              marks = this.enterInner(route[i], null, marks, false);
+          return marks;
       }
       // Try to insert the given node, adjusting the context when needed.
-      insertNode(node) {
+      insertNode(node, marks, cautious) {
           if (node.isInline && this.needsBlock && !this.top.type) {
               let block = this.textblockFromContext();
               if (block)
-                  this.enterInner(block);
+                  marks = this.enterInner(block, null, marks);
           }
-          if (this.findPlace(node)) {
+          let innerMarks = this.findPlace(node, marks, cautious);
+          if (innerMarks) {
               this.closeExtra();
               let top = this.top;
-              top.applyPending(node.type);
               if (top.match)
                   top.match = top.match.matchType(node.type);
-              let marks = top.activeMarks;
-              for (let i = 0; i < node.marks.length; i++)
-                  if (!top.type || top.type.allowsMarkType(node.marks[i].type))
-                      marks = node.marks[i].addToSet(marks);
-              top.content.push(node.mark(marks));
+              let nodeMarks = Mark.none;
+              for (let m of innerMarks.concat(node.marks))
+                  if (top.type ? top.type.allowsMarkType(m.type) : markMayApply(m.type, node.type))
+                      nodeMarks = m.addToSet(nodeMarks);
+              top.content.push(node.mark(nodeMarks));
               return true;
           }
           return false;
       }
       // Try to start a node of the given type, adjusting the context when
       // necessary.
-      enter(type, attrs, preserveWS) {
-          let ok = this.findPlace(type.create(attrs));
-          if (ok)
-              this.enterInner(type, attrs, true, preserveWS);
-          return ok;
+      enter(type, attrs, marks, preserveWS) {
+          let innerMarks = this.findPlace(type.create(attrs), marks, false);
+          if (innerMarks)
+              innerMarks = this.enterInner(type, attrs, marks, true, preserveWS);
+          return innerMarks;
       }
       // Open a node of the given type
-      enterInner(type, attrs = null, solid = false, preserveWS) {
+      enterInner(type, attrs, marks, solid = false, preserveWS) {
           this.closeExtra();
           let top = this.top;
-          top.applyPending(type);
           top.match = top.match && top.match.matchType(type);
           let options = wsOptionsFor(type, preserveWS, top.options);
           if ((top.options & OPT_OPEN_LEFT) && top.content.length == 0)
               options |= OPT_OPEN_LEFT;
-          this.nodes.push(new NodeContext(type, attrs, top.activeMarks, top.pendingMarks, solid, null, options));
+          let applyMarks = Mark.none;
+          marks = marks.filter(m => {
+              if (top.type ? top.type.allowsMarkType(m.type) : markMayApply(m.type, type)) {
+                  applyMarks = m.addToSet(applyMarks);
+                  return false;
+              }
+              return true;
+          });
+          this.nodes.push(new NodeContext(type, attrs, applyMarks, solid, null, options));
           this.open++;
+          return marks;
       }
       // Make sure all nodes above this.open are finished and added to
       // their parents
@@ -16132,14 +16242,18 @@
       finish() {
           this.open = 0;
           this.closeExtra(this.isOpen);
-          return this.nodes[0].finish(this.isOpen || this.options.topOpen);
+          return this.nodes[0].finish(!!(this.isOpen || this.options.topOpen));
       }
       sync(to) {
-          for (let i = this.open; i >= 0; i--)
+          for (let i = this.open; i >= 0; i--) {
               if (this.nodes[i] == to) {
                   this.open = i;
                   return true;
               }
+              else if (this.localPreserveWS) {
+                  this.nodes[i].options |= OPT_PRESERVE_WS;
+              }
+          }
           return false;
       }
       get currentPos() {
@@ -16208,7 +16322,7 @@
                       let next = depth > 0 || (depth == 0 && useRoot) ? this.nodes[depth].type
                           : option && depth >= minDepth ? option.node(depth - minDepth).type
                               : null;
-                      if (!next || (next.name != part && next.groups.indexOf(part) == -1))
+                      if (!next || (next.name != part && !next.isInGroup(part)))
                           return false;
                       depth--;
                   }
@@ -16229,29 +16343,6 @@
               let type = this.parser.schema.nodes[name];
               if (type.isTextblock && type.defaultAttrs)
                   return type;
-          }
-      }
-      addPendingMark(mark) {
-          let found = findSameMarkInSet(mark, this.top.pendingMarks);
-          if (found)
-              this.top.stashMarks.push(found);
-          this.top.pendingMarks = mark.addToSet(this.top.pendingMarks);
-      }
-      removePendingMark(mark, upto) {
-          for (let depth = this.open; depth >= 0; depth--) {
-              let level = this.nodes[depth];
-              let found = level.pendingMarks.lastIndexOf(mark);
-              if (found > -1) {
-                  level.pendingMarks = mark.removeFromSet(level.pendingMarks);
-              }
-              else {
-                  level.activeMarks = mark.removeFromSet(level.activeMarks);
-                  let stashMark = level.popFromStashMark(mark);
-                  if (stashMark && level.type && level.type.allowsMarkType(stashMark.type))
-                      level.activeMarks = stashMark.addToSet(level.activeMarks);
-              }
-              if (level == upto)
-                  break;
           }
       }
   }
@@ -16276,13 +16367,6 @@
   // Apply a CSS selector.
   function matches(dom, selector) {
       return (dom.matches || dom.msMatchesSelector || dom.webkitMatchesSelector || dom.mozMatchesSelector).call(dom, selector);
-  }
-  // Tokenize a style attribute into property/value pairs.
-  function parseStyles(style) {
-      let re = /\s*([\w-]+)\s*:\s*([^;]+)/g, m, result = [];
-      while (m = re.exec(style))
-          result.push(m[1], m[2].trim());
-      return result;
   }
   function copy(obj) {
       let copy = {};
@@ -16311,12 +16395,6 @@
           };
           if (scan(parent.contentMatch))
               return true;
-      }
-  }
-  function findSameMarkInSet(mark, set) {
-      for (let i = 0; i < set.length; i++) {
-          if (mark.eq(set[i]))
-              return set[i];
       }
   }
 
@@ -16390,7 +16468,7 @@
       @internal
       */
       serializeNodeInner(node, options) {
-          let { dom, contentDOM } = DOMSerializer.renderSpec(doc$1(options), this.nodes[node.type.name](node));
+          let { dom, contentDOM } = renderSpec(doc$1(options), this.nodes[node.type.name](node), null, node.attrs);
           if (contentDOM) {
               if (node.isLeaf)
                   throw new RangeError("Content hole not allowed in a leaf node spec");
@@ -16421,57 +16499,10 @@
       */
       serializeMark(mark, inline, options = {}) {
           let toDOM = this.marks[mark.type.name];
-          return toDOM && DOMSerializer.renderSpec(doc$1(options), toDOM(mark, inline));
+          return toDOM && renderSpec(doc$1(options), toDOM(mark, inline), null, mark.attrs);
       }
-      /**
-      Render an [output spec](https://prosemirror.net/docs/ref/#model.DOMOutputSpec) to a DOM node. If
-      the spec has a hole (zero) in it, `contentDOM` will point at the
-      node with the hole.
-      */
-      static renderSpec(doc, structure, xmlNS = null) {
-          if (typeof structure == "string")
-              return { dom: doc.createTextNode(structure) };
-          if (structure.nodeType != null)
-              return { dom: structure };
-          if (structure.dom && structure.dom.nodeType != null)
-              return structure;
-          let tagName = structure[0], space = tagName.indexOf(" ");
-          if (space > 0) {
-              xmlNS = tagName.slice(0, space);
-              tagName = tagName.slice(space + 1);
-          }
-          let contentDOM;
-          let dom = (xmlNS ? doc.createElementNS(xmlNS, tagName) : doc.createElement(tagName));
-          let attrs = structure[1], start = 1;
-          if (attrs && typeof attrs == "object" && attrs.nodeType == null && !Array.isArray(attrs)) {
-              start = 2;
-              for (let name in attrs)
-                  if (attrs[name] != null) {
-                      let space = name.indexOf(" ");
-                      if (space > 0)
-                          dom.setAttributeNS(name.slice(0, space), name.slice(space + 1), attrs[name]);
-                      else
-                          dom.setAttribute(name, attrs[name]);
-                  }
-          }
-          for (let i = start; i < structure.length; i++) {
-              let child = structure[i];
-              if (child === 0) {
-                  if (i < structure.length - 1 || i > start)
-                      throw new RangeError("Content hole must be the only child of its parent node");
-                  return { dom, contentDOM: dom };
-              }
-              else {
-                  let { dom: inner, contentDOM: innerContent } = DOMSerializer.renderSpec(doc, child, xmlNS);
-                  dom.appendChild(inner);
-                  if (innerContent) {
-                      if (contentDOM)
-                          throw new RangeError("Multiple content holes");
-                      contentDOM = innerContent;
-                  }
-              }
-          }
-          return { dom, contentDOM };
+      static renderSpec(doc, structure, xmlNS = null, blockArraysIn) {
+          return renderSpec(doc, structure, xmlNS, blockArraysIn);
       }
       /**
       Build a serializer using the [`toDOM`](https://prosemirror.net/docs/ref/#model.NodeSpec.toDOM)
@@ -16509,6 +16540,90 @@
   }
   function doc$1(options) {
       return options.document || window.document;
+  }
+  const suspiciousAttributeCache = new WeakMap();
+  function suspiciousAttributes(attrs) {
+      let value = suspiciousAttributeCache.get(attrs);
+      if (value === undefined)
+          suspiciousAttributeCache.set(attrs, value = suspiciousAttributesInner(attrs));
+      return value;
+  }
+  function suspiciousAttributesInner(attrs) {
+      let result = null;
+      function scan(value) {
+          if (value && typeof value == "object") {
+              if (Array.isArray(value)) {
+                  if (typeof value[0] == "string") {
+                      if (!result)
+                          result = [];
+                      result.push(value);
+                  }
+                  else {
+                      for (let i = 0; i < value.length; i++)
+                          scan(value[i]);
+                  }
+              }
+              else {
+                  for (let prop in value)
+                      scan(value[prop]);
+              }
+          }
+      }
+      scan(attrs);
+      return result;
+  }
+  function renderSpec(doc, structure, xmlNS, blockArraysIn) {
+      if (typeof structure == "string")
+          return { dom: doc.createTextNode(structure) };
+      if (structure.nodeType != null)
+          return { dom: structure };
+      if (structure.dom && structure.dom.nodeType != null)
+          return structure;
+      let tagName = structure[0], suspicious;
+      if (typeof tagName != "string")
+          throw new RangeError("Invalid array passed to renderSpec");
+      if (blockArraysIn && (suspicious = suspiciousAttributes(blockArraysIn)) &&
+          suspicious.indexOf(structure) > -1)
+          throw new RangeError("Using an array from an attribute object as a DOM spec. This may be an attempted cross site scripting attack.");
+      let space = tagName.indexOf(" ");
+      if (space > 0) {
+          xmlNS = tagName.slice(0, space);
+          tagName = tagName.slice(space + 1);
+      }
+      let contentDOM;
+      let dom = (xmlNS ? doc.createElementNS(xmlNS, tagName) : doc.createElement(tagName));
+      let attrs = structure[1], start = 1;
+      if (attrs && typeof attrs == "object" && attrs.nodeType == null && !Array.isArray(attrs)) {
+          start = 2;
+          for (let name in attrs)
+              if (attrs[name] != null) {
+                  let space = name.indexOf(" ");
+                  if (space > 0)
+                      dom.setAttributeNS(name.slice(0, space), name.slice(space + 1), attrs[name]);
+                  else if (name == "style" && dom.style)
+                      dom.style.cssText = attrs[name];
+                  else
+                      dom.setAttribute(name, attrs[name]);
+              }
+      }
+      for (let i = start; i < structure.length; i++) {
+          let child = structure[i];
+          if (child === 0) {
+              if (i < structure.length - 1 || i > start)
+                  throw new RangeError("Content hole must be the only child of its parent node");
+              return { dom, contentDOM: dom };
+          }
+          else {
+              let { dom: inner, contentDOM: innerContent } = renderSpec(doc, child, xmlNS, blockArraysIn);
+              dom.appendChild(inner);
+              if (innerContent) {
+                  if (contentDOM)
+                      throw new RangeError("Multiple content holes");
+                  contentDOM = innerContent;
+              }
+          }
+      }
+      return { dom, contentDOM };
   }
 
   // Recovery values encode a range index and an offset. They are
@@ -16696,18 +16811,14 @@
   maps](https://prosemirror.net/docs/ref/#transform.StepMap). It has special provisions for losslessly
   handling mapping positions through a series of steps in which some
   steps are inverted versions of earlier steps. (This comes up when
-  ‘[rebasing](/docs/guide/#transform.rebasing)’ steps for
+  ‘[rebasing](https://prosemirror.net/docs/guide/#transform.rebasing)’ steps for
   collaboration or history management.)
   */
   class Mapping {
       /**
       Create a new mapping with the given position maps.
       */
-      constructor(
-      /**
-      The step maps in this mapping.
-      */
-      maps = [], 
+      constructor(maps, 
       /**
       @internal
       */
@@ -16720,23 +16831,22 @@
       /**
       The end position in the `maps` array.
       */
-      to = maps.length) {
-          this.maps = maps;
+      to = maps ? maps.length : 0) {
           this.mirror = mirror;
           this.from = from;
           this.to = to;
+          this._maps = maps || [];
+          this.ownData = !(maps || mirror);
       }
+      /**
+      The step maps in this mapping.
+      */
+      get maps() { return this._maps; }
       /**
       Create a mapping that maps only through a part of this one.
       */
       slice(from = 0, to = this.maps.length) {
-          return new Mapping(this.maps, this.mirror, from, to);
-      }
-      /**
-      @internal
-      */
-      copy() {
-          return new Mapping(this.maps.slice(), this.mirror && this.mirror.slice(), this.from, this.to);
+          return new Mapping(this._maps, this.mirror, from, to);
       }
       /**
       Add a step map to the end of this mapping. If `mirrors` is
@@ -16744,18 +16854,23 @@
       image of this one.
       */
       appendMap(map, mirrors) {
-          this.to = this.maps.push(map);
+          if (!this.ownData) {
+              this._maps = this._maps.slice();
+              this.mirror = this.mirror && this.mirror.slice();
+              this.ownData = true;
+          }
+          this.to = this._maps.push(map);
           if (mirrors != null)
-              this.setMirror(this.maps.length - 1, mirrors);
+              this.setMirror(this._maps.length - 1, mirrors);
       }
       /**
       Add all the step maps in a given mapping to this one (preserving
       mirroring information).
       */
       appendMapping(mapping) {
-          for (let i = 0, startSize = this.maps.length; i < mapping.maps.length; i++) {
+          for (let i = 0, startSize = this._maps.length; i < mapping._maps.length; i++) {
               let mirr = mapping.getMirror(i);
-              this.appendMap(mapping.maps[i], mirr != null && mirr < i ? startSize + mirr : undefined);
+              this.appendMap(mapping._maps[i], mirr != null && mirr < i ? startSize + mirr : undefined);
           }
       }
       /**
@@ -16781,9 +16896,9 @@
       Append the inverse of the given mapping to this one.
       */
       appendMappingInverted(mapping) {
-          for (let i = mapping.maps.length - 1, totalSize = this.maps.length + mapping.maps.length; i >= 0; i--) {
+          for (let i = mapping.maps.length - 1, totalSize = this._maps.length + mapping._maps.length; i >= 0; i--) {
               let mirr = mapping.getMirror(i);
-              this.appendMap(mapping.maps[i].invert(), mirr != null && mirr > i ? totalSize - mirr - 1 : undefined);
+              this.appendMap(mapping._maps[i].invert(), mirr != null && mirr > i ? totalSize - mirr - 1 : undefined);
           }
       }
       /**
@@ -16801,7 +16916,7 @@
           if (this.mirror)
               return this._map(pos, assoc, true);
           for (let i = this.from; i < this.to; i++)
-              pos = this.maps[i].map(pos, assoc);
+              pos = this._maps[i].map(pos, assoc);
           return pos;
       }
       /**
@@ -16815,12 +16930,12 @@
       _map(pos, assoc, simple) {
           let delInfo = 0;
           for (let i = this.from; i < this.to; i++) {
-              let map = this.maps[i], result = map.mapResult(pos, assoc);
+              let map = this._maps[i], result = map.mapResult(pos, assoc);
               if (result.recover != null) {
                   let corr = this.getMirror(i);
                   if (corr != null && corr > i && corr < this.to) {
                       i = corr;
-                      pos = this.maps[corr].recover(result.recover);
+                      pos = this._maps[corr].recover(result.recover);
                       continue;
                   }
               }
@@ -17225,7 +17340,7 @@
           let from = mapping.mapResult(this.from, 1), to = mapping.mapResult(this.to, -1);
           if (from.deletedAcross && to.deletedAcross)
               return null;
-          return new ReplaceStep(from.pos, Math.max(from.pos, to.pos), this.slice);
+          return new ReplaceStep(from.pos, Math.max(from.pos, to.pos), this.slice, this.structure);
       }
       merge(other) {
           if (!(other instanceof ReplaceStep) || other.structure || this.structure)
@@ -17586,7 +17701,9 @@
           throw new RangeError("Type given to setBlockType should be a textblock");
       let mapFrom = tr.steps.length;
       tr.doc.nodesBetween(from, to, (node, pos) => {
-          if (node.isTextblock && !node.hasMarkup(type, attrs) && canChangeType(tr.doc, tr.mapping.slice(mapFrom).map(pos), type)) {
+          let attrsHere = typeof attrs == "function" ? attrs(node) : attrs;
+          if (node.isTextblock && !node.hasMarkup(type, attrsHere) &&
+              canChangeType(tr.doc, tr.mapping.slice(mapFrom).map(pos), type)) {
               let convertNewlines = null;
               if (type.schema.linebreakReplacement) {
                   let pre = type.whitespace == "pre", supportLinebreak = !!type.contentMatch.matchType(type.schema.linebreakReplacement);
@@ -17601,7 +17718,7 @@
               clearIncompatible(tr, tr.mapping.slice(mapFrom).map(pos, 1), type, undefined, convertNewlines === null);
               let mapping = tr.mapping.slice(mapFrom);
               let startM = mapping.map(pos, 1), endM = mapping.map(pos + node.nodeSize, 1);
-              tr.step(new ReplaceAroundStep(startM, endM, startM + 1, endM - 1, new Slice(Fragment.from(type.create(attrs, null, node.marks)), 0, 0), 1, true));
+              tr.step(new ReplaceAroundStep(startM, endM, startM + 1, endM - 1, new Slice(Fragment.from(type.create(attrsHere, null, node.marks)), 0, 0), 1, true));
               if (convertNewlines === true)
                   replaceNewlines(tr, node, pos, mapFrom);
               return false;
@@ -17692,8 +17809,24 @@
       return joinable($pos.nodeBefore, $pos.nodeAfter) &&
           $pos.parent.canReplace(index, index + 1);
   }
+  function canAppendWithSubstitutedLinebreaks(a, b) {
+      if (!b.content.size)
+          a.type.compatibleContent(b.type);
+      let match = a.contentMatchAt(a.childCount);
+      let { linebreakReplacement } = a.type.schema;
+      for (let i = 0; i < b.childCount; i++) {
+          let child = b.child(i);
+          let type = child.type == linebreakReplacement ? a.type.schema.nodes.text : child.type;
+          match = match.matchType(type);
+          if (!match)
+              return false;
+          if (!a.type.allowsMarks(child.marks))
+              return false;
+      }
+      return match.validEnd;
+  }
   function joinable(a, b) {
-      return !!(a && b && !a.isLeaf && a.canAppend(b));
+      return !!(a && b && !a.isLeaf && canAppendWithSubstitutedLinebreaks(a, b));
   }
   /**
   Find an ancestor of the given position that can be joined to the
@@ -17726,8 +17859,31 @@
       }
   }
   function join(tr, pos, depth) {
-      let step = new ReplaceStep(pos - depth, pos + depth, Slice.empty, true);
-      tr.step(step);
+      let convertNewlines = null;
+      let { linebreakReplacement } = tr.doc.type.schema;
+      let $before = tr.doc.resolve(pos - depth), beforeType = $before.node().type;
+      if (linebreakReplacement && beforeType.inlineContent) {
+          let pre = beforeType.whitespace == "pre";
+          let supportLinebreak = !!beforeType.contentMatch.matchType(linebreakReplacement);
+          if (pre && !supportLinebreak)
+              convertNewlines = false;
+          else if (!pre && supportLinebreak)
+              convertNewlines = true;
+      }
+      let mapFrom = tr.steps.length;
+      if (convertNewlines === false) {
+          let $after = tr.doc.resolve(pos + depth);
+          replaceLinebreaks(tr, $after.node(), $after.before(), mapFrom);
+      }
+      if (beforeType.inlineContent)
+          clearIncompatible(tr, pos + depth - 1, beforeType, $before.node().contentMatchAt($before.index()), convertNewlines == null);
+      let mapping = tr.mapping.slice(mapFrom), start = mapping.map(pos - depth);
+      tr.step(new ReplaceStep(start, mapping.map(pos + depth, -1), Slice.empty, true));
+      if (convertNewlines === true) {
+          let $full = tr.doc.resolve(start);
+          replaceNewlines(tr, $full.node(), $full.before(), tr.steps.length);
+      }
+      return tr;
   }
   /**
   Try to find a point where a node of the given type can be inserted
@@ -18211,7 +18367,8 @@
               return tr.delete($from.before(depth), $to.after(depth));
       }
       for (let d = 1; d <= $from.depth && d <= $to.depth; d++) {
-          if (from - $from.start(d) == $from.depth - d && to > $from.end(d) && $to.end(d) - to != $to.depth - d)
+          if (from - $from.start(d) == $from.depth - d && to > $from.end(d) && $to.end(d) - to != $to.depth - d &&
+              $from.start(d - 1) == $to.start(d - 1) && $from.node(d - 1).canReplace($from.index(d - 1), $to.index(d - 1)))
               return tr.delete($from.before(d), to);
       }
       tr.delete(from, to);
@@ -18560,19 +18717,26 @@
           return this;
       }
       /**
-      Remove a mark (or a mark of the given type) from the node at
+      Remove a mark (or all marks of the given type) from the node at
       position `pos`.
       */
       removeNodeMark(pos, mark) {
-          if (!(mark instanceof Mark)) {
-              let node = this.doc.nodeAt(pos);
-              if (!node)
-                  throw new RangeError("No node at position " + pos);
-              mark = mark.isInSet(node.marks);
-              if (!mark)
-                  return this;
+          let node = this.doc.nodeAt(pos);
+          if (!node)
+              throw new RangeError("No node at position " + pos);
+          if (mark instanceof Mark) {
+              if (mark.isInSet(node.marks))
+                  this.step(new RemoveNodeMarkStep(pos, mark));
           }
-          this.step(new RemoveNodeMarkStep(pos, mark));
+          else {
+              let set = node.marks, found, steps = [];
+              while (found = mark.isInSet(set)) {
+                  steps.push(new RemoveNodeMarkStep(pos, found));
+                  set = found.removeFromSet(set);
+              }
+              for (let i = steps.length - 1; i >= 0; i--)
+                  this.step(steps[i]);
+          }
           return this;
       }
       /**
@@ -18580,7 +18744,7 @@
       greater than one, any number of nodes above that. By default, the
       parts split off will inherit the node type of the original node.
       This can be changed by passing an array of types and attributes to
-      use after the split.
+      use after the split (with the outermost nodes coming first).
       */
       split(pos, depth = 1, typesAfter) {
           split(this, pos, depth, typesAfter);
@@ -19248,7 +19412,6 @@
           else {
               if (to == null)
                   to = from;
-              to = to == null ? from : to;
               if (!text)
                   return this.deleteRange(from, to);
               let marks = this.storedMarks;
@@ -19257,7 +19420,7 @@
                   marks = to == from ? $from.marks() : $from.marksAcross(this.doc.resolve(to));
               }
               this.replaceRangeWith(from, to, schema.text(text, marks));
-              if (!this.selection.empty)
+              if (!this.selection.empty && this.selection.to == from + text.length)
                   this.setSelection(Selection.near(this.selection.$to));
               return this;
           }
@@ -19453,7 +19616,7 @@
           return newInstance;
       }
       /**
-      Start a [transaction](https://prosemirror.net/docs/ref/#state.Transaction) from this state.
+      Accessor that constructs and returns a new [transaction](https://prosemirror.net/docs/ref/#state.Transaction) from this state.
       */
       get tr() { return new Transaction(this); }
       /**
@@ -19647,6 +19810,7 @@
   };
   const atomElements = /^(img|br|input|textarea|hr)$/i;
   function scanFor(node, off, targetNode, targetOff, dir) {
+      var _a;
       for (;;) {
           if (node == targetNode && off == targetOff)
               return true;
@@ -19659,10 +19823,17 @@
               node = parent;
           }
           else if (node.nodeType == 1) {
-              node = node.childNodes[off + (dir < 0 ? -1 : 0)];
-              if (node.contentEditable == "false")
-                  return false;
-              off = dir < 0 ? nodeSize(node) : 0;
+              let child = node.childNodes[off + (dir < 0 ? -1 : 0)];
+              if (child.nodeType == 1 && child.contentEditable == "false") {
+                  if ((_a = child.pmViewDesc) === null || _a === void 0 ? void 0 : _a.ignoreForSelection)
+                      off += dir;
+                  else
+                      return false;
+              }
+              else {
+                  node = child;
+                  off = dir < 0 ? nodeSize(node) : 0;
+              }
           }
           else {
               return false;
@@ -19751,15 +19922,18 @@
       if (doc.caretPositionFromPoint) {
           try { // Firefox throws for this call in hard-to-predict circumstances (#994)
               let pos = doc.caretPositionFromPoint(x, y);
+              // Clip the offset, because Chrome will return a text offset
+              // into <input> nodes, which can't be treated as a regular DOM
+              // offset
               if (pos)
-                  return { node: pos.offsetNode, offset: pos.offset };
+                  return { node: pos.offsetNode, offset: Math.min(nodeSize(pos.offsetNode), pos.offset) };
           }
           catch (_) { }
       }
       if (doc.caretRangeFromPoint) {
           let range = doc.caretRangeFromPoint(x, y);
           if (range)
-              return { node: range.startContainer, offset: range.startOffset };
+              return { node: range.startContainer, offset: Math.min(nodeSize(range.startContainer), range.startOffset) };
       }
   }
 
@@ -19780,7 +19954,7 @@
   // Is true for both iOS and iPadOS for convenience
   const ios = safari && (/Mobile\/\w+/.test(agent) || !!nav && nav.maxTouchPoints > 2);
   const mac$4 = ios || (nav ? /Mac/.test(nav.platform) : false);
-  const windows = nav ? /Win/.test(nav.platform) : false;
+  const windows$1 = nav ? /Win/.test(nav.platform) : false;
   const android = /Android \d/.test(agent);
   const webkit = !!doc && "webkitFontSmoothing" in doc.documentElement.style;
   const webkit_version = webkit ? +(/\bAppleWebKit\/(\d+)/.exec(navigator.userAgent) || [0, 0])[1] : 0;
@@ -19810,11 +19984,13 @@
   function scrollRectIntoView(view, rect, startDOM) {
       let scrollThreshold = view.someProp("scrollThreshold") || 0, scrollMargin = view.someProp("scrollMargin") || 5;
       let doc = view.dom.ownerDocument;
-      for (let parent = startDOM || view.dom;; parent = parentNode(parent)) {
+      for (let parent = startDOM || view.dom;;) {
           if (!parent)
               break;
-          if (parent.nodeType != 1)
+          if (parent.nodeType != 1) {
+              parent = parentNode(parent);
               continue;
+          }
           let elt = parent;
           let atTop = elt == doc.body;
           let bounding = atTop ? windowRect(doc) : clientRect(elt);
@@ -19843,8 +20019,10 @@
                   rect = { left: rect.left - dX, top: rect.top - dY, right: rect.right - dX, bottom: rect.bottom - dY };
               }
           }
-          if (atTop || /^(fixed|sticky)$/.test(getComputedStyle(parent).position))
+          let pos = atTop ? "fixed" : getComputedStyle(parent).position;
+          if (/^(fixed|sticky)$/.test(pos))
               break;
+          parent = pos == "absolute" ? parent.offsetParent : parentNode(parent);
       }
   }
   // Store the scroll position of the editor's parent nodes, along with
@@ -20005,17 +20183,19 @@
       for (let cur = node, sawBlock = false;;) {
           if (cur == view.dom)
               break;
-          let desc = view.docView.nearestDesc(cur, true);
+          let desc = view.docView.nearestDesc(cur, true), rect;
           if (!desc)
               return null;
-          if (desc.dom.nodeType == 1 && (desc.node.isBlock && desc.parent && !sawBlock || !desc.contentDOM)) {
-              let rect = desc.dom.getBoundingClientRect();
-              if (desc.node.isBlock && desc.parent && !sawBlock) {
-                  sawBlock = true;
-                  if (rect.left > coords.left || rect.top > coords.top)
+          if (desc.dom.nodeType == 1 && (desc.node.isBlock && desc.parent || !desc.contentDOM) &&
+              // Ignore elements with zero-size bounding rectangles
+              ((rect = desc.dom.getBoundingClientRect()).width || rect.height)) {
+              if (desc.node.isBlock && desc.parent && !/^T(R|BODY|HEAD|FOOT)$/.test(desc.dom.nodeName)) {
+                  // Only apply the horizontal test to the innermost block. Vertical for any parent.
+                  if (!sawBlock && rect.left > coords.left || rect.top > coords.top)
                       outsideBlock = desc.posBefore;
-                  else if (rect.right < coords.left || rect.bottom < coords.top)
+                  else if (!sawBlock && rect.right < coords.left || rect.bottom < coords.top)
                       outsideBlock = desc.posAfter;
+                  sawBlock = true;
               }
               if (!desc.contentDOM && outsideBlock < 0 && !desc.node.isText) {
                   // If we are inside a leaf, return the side of the leaf closer to the coords
@@ -20270,6 +20450,8 @@
           return false;
       let offset = $head.parentOffset, atStart = !offset, atEnd = offset == $head.parent.content.size;
       let sel = view.domSelection();
+      if (!sel)
+          return $head.pos == $head.start() || $head.pos == $head.end();
       // If the textblock is all LTR, or the browser doesn't support
       // Selection.modify (Edge), fall back to a primitive approach
       if (!maybeRTL.test($head.parent.textContent) || !sel.modify)
@@ -20490,8 +20672,15 @@
           for (let i = 0, offset = 0; i < this.children.length; i++) {
               let child = this.children[i], end = offset + child.size;
               if (offset == pos && end != offset) {
-                  while (!child.border && child.children.length)
-                      child = child.children[0];
+                  while (!child.border && child.children.length) {
+                      for (let i = 0; i < child.children.length; i++) {
+                          let inner = child.children[i];
+                          if (inner.size) {
+                              child = inner;
+                              break;
+                          }
+                      }
+                  }
                   return child;
               }
               if (pos < end)
@@ -20602,18 +20791,19 @@
       // custom things with the selection. Note that this falls apart when
       // a selection starts in such a node and ends in another, in which
       // case we just use whatever domFromPos produces as a best effort.
-      setSelection(anchor, head, root, force = false) {
+      setSelection(anchor, head, view, force = false) {
           // If the selection falls entirely in a child, give it to that child
           let from = Math.min(anchor, head), to = Math.max(anchor, head);
           for (let i = 0, offset = 0; i < this.children.length; i++) {
               let child = this.children[i], end = offset + child.size;
               if (from > offset && to < end)
-                  return child.setSelection(anchor - offset - child.border, head - offset - child.border, root, force);
+                  return child.setSelection(anchor - offset - child.border, head - offset - child.border, view, force);
               offset = end;
           }
           let anchorDOM = this.domFromPos(anchor, anchor ? -1 : 1);
           let headDOM = head == anchor ? anchorDOM : this.domFromPos(head, head ? -1 : 1);
-          let domSel = root.getSelection();
+          let domSel = view.root.getSelection();
+          let selRange = view.domSelectionRange();
           let brKludge = false;
           // On Firefox, using Selection.collapse to put the cursor after a
           // BR node for some reason doesn't always work (#1073). On Safari,
@@ -20644,20 +20834,20 @@
           }
           // Firefox can act strangely when the selection is in front of an
           // uneditable node. See #1163 and https://bugzilla.mozilla.org/show_bug.cgi?id=1709536
-          if (gecko && domSel.focusNode && domSel.focusNode != headDOM.node && domSel.focusNode.nodeType == 1) {
-              let after = domSel.focusNode.childNodes[domSel.focusOffset];
+          if (gecko && selRange.focusNode && selRange.focusNode != headDOM.node && selRange.focusNode.nodeType == 1) {
+              let after = selRange.focusNode.childNodes[selRange.focusOffset];
               if (after && after.contentEditable == "false")
                   force = true;
           }
           if (!(force || brKludge && safari) &&
-              isEquivalentPosition(anchorDOM.node, anchorDOM.offset, domSel.anchorNode, domSel.anchorOffset) &&
-              isEquivalentPosition(headDOM.node, headDOM.offset, domSel.focusNode, domSel.focusOffset))
+              isEquivalentPosition(anchorDOM.node, anchorDOM.offset, selRange.anchorNode, selRange.anchorOffset) &&
+              isEquivalentPosition(headDOM.node, headDOM.offset, selRange.focusNode, selRange.focusOffset))
               return;
           // Selection.extend can be used to create an 'inverted' selection
           // (one where the focus is before the anchor), but not all
           // browsers support it yet.
           let domSelExtended = false;
-          if ((domSel.extend || anchor == head) && !brKludge) {
+          if ((domSel.extend || anchor == head) && !(brKludge && gecko)) {
               domSel.collapse(anchorDOM.node, anchorDOM.offset);
               try {
                   if (anchor != head)
@@ -20727,6 +20917,7 @@
       }
       get domAtom() { return false; }
       get ignoreForCoords() { return false; }
+      get ignoreForSelection() { return false; }
       isText(text) { return false; }
   }
   // A widget desc represents a widget decoration, which is a DOM node
@@ -20771,6 +20962,7 @@
           super.destroy();
       }
       get domAtom() { return true; }
+      get ignoreForSelection() { return !!this.widget.type.spec.relaxedSide; }
       get side() { return this.widget.type.side; }
   }
   class CompositionViewDesc extends ViewDesc {
@@ -20798,16 +20990,17 @@
   // some cases they will be split more often than would appear
   // necessary.
   class MarkViewDesc extends ViewDesc {
-      constructor(parent, mark, dom, contentDOM) {
+      constructor(parent, mark, dom, contentDOM, spec) {
           super(parent, [], dom, contentDOM);
           this.mark = mark;
+          this.spec = spec;
       }
       static create(parent, mark, inline, view) {
           let custom = view.nodeViews[mark.type.name];
           let spec = custom && custom(mark, view, inline);
           if (!spec || !spec.dom)
-              spec = DOMSerializer.renderSpec(document, mark.type.spec.toDOM(mark, inline));
-          return new MarkViewDesc(parent, mark, spec.dom, spec.contentDOM || spec.dom);
+              spec = DOMSerializer.renderSpec(document, mark.type.spec.toDOM(mark, inline), null, mark.attrs);
+          return new MarkViewDesc(parent, mark, spec.dom, spec.contentDOM || spec.dom, spec);
       }
       parseRule() {
           if ((this.dirty & NODE_DIRTY) || this.mark.type.spec.reparseInView)
@@ -20838,6 +21031,14 @@
               nodes[i].parent = copy;
           copy.children = nodes;
           return copy;
+      }
+      ignoreMutation(mutation) {
+          return this.spec.ignoreMutation ? this.spec.ignoreMutation(mutation) : super.ignoreMutation(mutation);
+      }
+      destroy() {
+          if (this.spec.destroy)
+              this.spec.destroy();
+          super.destroy();
       }
   }
   // Node view descs are the main, most common type of view desc, and
@@ -20878,7 +21079,8 @@
                   throw new RangeError("Text must be rendered as a DOM text node");
           }
           else if (!dom) {
-              ({ dom, contentDOM } = DOMSerializer.renderSpec(document, node.type.spec.toDOM(node)));
+              let spec = DOMSerializer.renderSpec(document, node.type.spec.toDOM(node), null, node.attrs);
+              ({ dom, contentDOM } = spec);
           }
           if (!contentDOM && !node.isText && dom.nodeName != "BR") { // Chrome gets confused by <br contenteditable=false>
               if (!dom.hasAttribute("contenteditable"))
@@ -21057,17 +21259,19 @@
       }
       // Mark this node as being the selected node.
       selectNode() {
-          if (this.nodeDOM.nodeType == 1)
+          if (this.nodeDOM.nodeType == 1) {
               this.nodeDOM.classList.add("ProseMirror-selectednode");
-          if (this.contentDOM || !this.node.type.spec.draggable)
-              this.dom.draggable = true;
+              if (this.contentDOM || !this.node.type.spec.draggable)
+                  this.nodeDOM.draggable = true;
+          }
       }
       // Remove selected node marking from this node.
       deselectNode() {
-          if (this.nodeDOM.nodeType == 1)
+          if (this.nodeDOM.nodeType == 1) {
               this.nodeDOM.classList.remove("ProseMirror-selectednode");
-          if (this.contentDOM || !this.node.type.spec.draggable)
-              this.dom.removeAttribute("draggable");
+              if (this.contentDOM || !this.node.type.spec.draggable)
+                  this.nodeDOM.removeAttribute("draggable");
+          }
       }
       get domAtom() { return this.node.isAtom; }
   }
@@ -21156,7 +21360,7 @@
       update(node, outerDeco, innerDeco, view) {
           if (this.dirty == NODE_DIRTY)
               return false;
-          if (this.spec.update) {
+          if (this.spec.update && (this.node.type == node.type || this.spec.multiType)) {
               let result = this.spec.update(node, outerDeco, innerDeco);
               if (result)
                   this.updateInner(node, outerDeco, innerDeco, view);
@@ -21175,9 +21379,9 @@
       deselectNode() {
           this.spec.deselectNode ? this.spec.deselectNode() : super.deselectNode();
       }
-      setSelection(anchor, head, root, force) {
-          this.spec.setSelection ? this.spec.setSelection(anchor, head, root)
-              : super.setSelection(anchor, head, root, force);
+      setSelection(anchor, head, view, force) {
+          this.spec.setSelection ? this.spec.setSelection(anchor, head, view.root)
+              : super.setSelection(anchor, head, view, force);
       }
       destroy() {
           if (this.spec.destroy)
@@ -21474,6 +21678,7 @@
                       return true;
                   }
                   else if (!locked && (updated = this.recreateWrapper(next, node, outerDeco, innerDeco, view, pos))) {
+                      this.destroyBetween(this.index, i);
                       this.top.children[this.index] = updated;
                       if (updated.contentDOM) {
                           updated.dirty = CONTENT_DIRTY;
@@ -21493,7 +21698,8 @@
       // identical content, move over its children.
       recreateWrapper(next, node, outerDeco, innerDeco, view, pos) {
           if (next.dirty || node.isAtom || !next.children.length ||
-              !next.node.content.eq(node.content))
+              !next.node.content.eq(node.content) ||
+              !sameOuterDeco(outerDeco, next.outerDeco) || !innerDeco.eq(next.innerDeco))
               return null;
           let wrapper = NodeViewDesc.create(this.top, node, outerDeco, innerDeco, view, pos);
           if (wrapper.contentDOM) {
@@ -21764,9 +21970,9 @@
       let head = view.docView.posFromDOM(domSel.focusNode, domSel.focusOffset, 1);
       if (head < 0)
           return null;
-      let $head = doc.resolve(head), $anchor, selection;
+      let $head = doc.resolve(head), anchor, selection;
       if (selectionCollapsed(domSel)) {
-          $anchor = $head;
+          anchor = head;
           while (nearestDesc && !nearestDesc.node)
               nearestDesc = nearestDesc.parent;
           let nearestDescNode = nearestDesc.node;
@@ -21777,11 +21983,25 @@
           }
       }
       else {
-          let anchor = view.docView.posFromDOM(domSel.anchorNode, domSel.anchorOffset, 1);
+          if (domSel instanceof view.dom.ownerDocument.defaultView.Selection && domSel.rangeCount > 1) {
+              let min = head, max = head;
+              for (let i = 0; i < domSel.rangeCount; i++) {
+                  let range = domSel.getRangeAt(i);
+                  min = Math.min(min, view.docView.posFromDOM(range.startContainer, range.startOffset, 1));
+                  max = Math.max(max, view.docView.posFromDOM(range.endContainer, range.endOffset, -1));
+              }
+              if (min < 0)
+                  return null;
+              [anchor, head] = max == view.state.selection.anchor ? [max, min] : [min, max];
+              $head = doc.resolve(head);
+          }
+          else {
+              anchor = view.docView.posFromDOM(domSel.anchorNode, domSel.anchorOffset, 1);
+          }
           if (anchor < 0)
               return null;
-          $anchor = doc.resolve(anchor);
       }
+      let $anchor = doc.resolve(anchor);
       if (!selection) {
           let bias = origin == "pointer" || (view.state.selection.head < $head.pos && !inWidget) ? 1 : -1;
           selection = selectionBetween(view, $anchor, $head, bias);
@@ -21821,7 +22041,7 @@
               if (!sel.empty && !sel.$from.parent.inlineContent)
                   resetEditableTo = temporarilyEditableNear(view, sel.to);
           }
-          view.docView.setSelection(anchor, head, view.root, force);
+          view.docView.setSelection(anchor, head, view, force);
           if (brokenSelectBetweenUneditable) {
               if (resetEditableFrom)
                   resetEditable(resetEditableFrom);
@@ -21889,15 +22109,14 @@
       });
   }
   function selectCursorWrapper(view) {
-      let domSel = view.domSelection(), range = document.createRange();
+      let domSel = view.domSelection();
+      if (!domSel)
+          return;
       let node = view.cursorWrapper.dom, img = node.nodeName == "IMG";
       if (img)
-          range.setEnd(node.parentNode, domIndex(node) + 1);
+          domSel.collapse(node.parentNode, domIndex(node) + 1);
       else
-          range.setEnd(node, 0);
-      range.collapse(false);
-      domSel.removeAllRanges();
-      domSel.addRange(range);
+          domSel.collapse(node, 0);
       // Kludge to kill 'control selection' in IE11 when selecting an
       // invisible cursor wrapper, since that would result in those weird
       // resize handles and a selection that considers the absolutely
@@ -22183,6 +22402,8 @@
           }
       }
       let sel = view.domSelection();
+      if (!sel)
+          return;
       if (selectionCollapsed(sel)) {
           let range = document.createRange();
           range.setEnd(node, offset);
@@ -22203,7 +22424,7 @@
   }
   function findDirection(view, pos) {
       let $pos = view.state.doc.resolve(pos);
-      if (!(chrome || windows) && $pos.parent.inlineContent) {
+      if (!(chrome || windows$1) && $pos.parent.inlineContent) {
           let coords = view.coordsAtPos(pos);
           if (pos > $pos.start()) {
               let before = view.coordsAtPos(pos - 1);
@@ -22373,11 +22594,14 @@
       let dom, slice;
       if (!html && !text)
           return null;
-      let asText = text && (plainText || inCode || !html);
+      let asText = !!text && (plainText || inCode || !html);
       if (asText) {
           view.someProp("transformPastedText", f => { text = f(text, inCode || plainText, view); });
-          if (inCode)
-              return text ? new Slice(Fragment.from(view.state.schema.text(text.replace(/\r\n?/g, "\n"))), 0, 0) : Slice.empty;
+          if (inCode) {
+              slice = new Slice(Fragment.from(view.state.schema.text(text.replace(/\r\n?/g, "\n"))), 0, 0);
+              view.someProp("transformPasted", f => { slice = f(slice, view, true); });
+              return slice;
+          }
           let parsed = view.someProp("clipboardTextParser", f => f(text, $context, plainText, view));
           if (parsed) {
               slice = parsed;
@@ -22435,7 +22659,7 @@
               slice = closeSlice(slice, openStart, openEnd);
           }
       }
-      view.someProp("transformPasted", f => { slice = f(slice, view); });
+      view.someProp("transformPasted", f => { slice = f(slice, view, asText); });
       return slice;
   }
   const inlineParents = /^(a|abbr|acronym|b|cite|code|del|em|i|ins|kbd|label|output|q|ruby|s|samp|span|strong|sub|sup|time|u|tt|var)$/i;
@@ -22537,6 +22761,18 @@
   function detachedDoc() {
       return _detachedDoc || (_detachedDoc = document.implementation.createHTMLDocument("title"));
   }
+  let _policy = null;
+  function maybeWrapTrusted(html) {
+      let trustedTypes = window.trustedTypes;
+      if (!trustedTypes)
+          return html;
+      // With the require-trusted-types-for CSP, Chrome will block
+      // innerHTML, even on a detached document. This wraps the string in
+      // a way that makes the browser allow us to use its parser again.
+      if (!_policy)
+          _policy = trustedTypes.defaultPolicy || trustedTypes.createPolicy("ProseMirrorClipboard", { createHTML: (s) => s });
+      return _policy.createHTML(html);
+  }
   function readHTML(html) {
       let metas = /^(\s*<meta [^>]*>)*/.exec(html);
       if (metas)
@@ -22545,7 +22781,7 @@
       let firstTag = /<([a-z][^>\s]+)/i.exec(html), wrap;
       if (wrap = firstTag && wrapMap[firstTag[1].toLowerCase()])
           html = wrap.map(n => "<" + n + ">").join("") + html + wrap.map(n => "</" + n + ">").reverse().join("");
-      elt.innerHTML = html;
+      elt.innerHTML = maybeWrapTrusted(html);
       if (wrap)
           for (let i = 0; i < wrap.length; i++)
               elt = elt.querySelector(wrap[i]) || elt;
@@ -22597,14 +22833,14 @@
           this.mouseDown = null;
           this.lastKeyCode = null;
           this.lastKeyCodeTime = 0;
-          this.lastClick = { time: 0, x: 0, y: 0, type: "" };
+          this.lastClick = { time: 0, x: 0, y: 0, type: "", button: 0 };
           this.lastSelectionOrigin = null;
           this.lastSelectionTime = 0;
           this.lastIOSEnter = 0;
           this.lastIOSEnterFallbackTimeout = -1;
           this.lastFocus = 0;
           this.lastTouch = 0;
-          this.lastAndroidDelete = 0;
+          this.lastChromeDelete = 0;
           this.composing = false;
           this.compositionNode = null;
           this.composingTimeout = -1;
@@ -22725,8 +22961,9 @@
       let sel = view.state.selection;
       if (!(sel instanceof TextSelection) || !sel.$from.sameParent(sel.$to)) {
           let text = String.fromCharCode(event.charCode);
-          if (!/[\r\n]/.test(text) && !view.someProp("handleTextInput", f => f(view, sel.$from.pos, sel.$to.pos, text)))
-              view.dispatch(view.state.tr.insertText(text).scrollIntoView());
+          let deflt = () => view.state.tr.insertText(text).scrollIntoView();
+          if (!/[\r\n]/.test(text) && !view.someProp("handleTextInput", f => f(view, sel.$from.pos, sel.$to.pos, text, deflt)))
+              view.dispatch(deflt());
           event.preventDefault();
       }
   };
@@ -22749,6 +22986,8 @@
   function updateSelection(view, selection, origin) {
       if (!view.focused)
           view.focus();
+      if (view.state.selection.eq(selection))
+          return;
       let tr = view.state.tr.setSelection(selection);
       if (origin == "pointer")
           tr.setMeta("pointer", true);
@@ -22837,13 +23076,14 @@
       view.input.shiftKey = event.shiftKey;
       let flushed = forceDOMFlush(view);
       let now = Date.now(), type = "singleClick";
-      if (now - view.input.lastClick.time < 500 && isNear(event, view.input.lastClick) && !event[selectNodeModifier]) {
+      if (now - view.input.lastClick.time < 500 && isNear(event, view.input.lastClick) && !event[selectNodeModifier] &&
+          view.input.lastClick.button == event.button) {
           if (view.input.lastClick.type == "singleClick")
               type = "doubleClick";
           else if (view.input.lastClick.type == "doubleClick")
               type = "tripleClick";
       }
-      view.input.lastClick = { time: now, x: event.clientX, y: event.clientY, type };
+      view.input.lastClick = { time: now, x: event.clientX, y: event.clientY, type, button: event.button };
       let pos = view.posAtCoords(eventCoords(event));
       if (!pos)
           return;
@@ -22882,7 +23122,7 @@
           }
           const target = flushed ? null : event.target;
           const targetDesc = target ? view.docView.nearestDesc(target, true) : null;
-          this.target = targetDesc ? targetDesc.dom : null;
+          this.target = targetDesc && targetDesc.nodeDOM.nodeType == 1 ? targetDesc.nodeDOM : null;
           let { selection } = view.state;
           if (event.button == 0 &&
               targetNode.type.spec.draggable && targetNode.type.spec.selectable !== false ||
@@ -23003,8 +23243,8 @@
   editHandlers.compositionstart = editHandlers.compositionupdate = view => {
       if (!view.composing) {
           view.domObserver.flush();
-          let { state } = view, $pos = state.selection.$from;
-          if (state.selection.empty &&
+          let { state } = view, $pos = state.selection.$to;
+          if (state.selection instanceof TextSelection &&
               (state.storedMarks ||
                   (!$pos.textOffset && $pos.parentOffset && $pos.nodeBefore.marks.some(m => m.type.spec.inclusive === false)))) {
               // Need to wrap the cursor in mark nodes different from the ones in the DOM context
@@ -23013,7 +23253,7 @@
               view.markCursor = null;
           }
           else {
-              endComposition(view);
+              endComposition(view, !state.selection.empty);
               // In firefox, if the cursor is after but outside a marked node,
               // the inserted text won't inherit the marks. So this moves it
               // inside if necessary.
@@ -23024,7 +23264,9 @@
                       if (!before)
                           break;
                       if (before.nodeType == 3) {
-                          view.domSelection().collapse(before, before.nodeValue.length);
+                          let sel = view.domSelection();
+                          if (sel)
+                              sel.collapse(before, before.nodeValue.length);
                           break;
                       }
                       else {
@@ -23070,7 +23312,9 @@
       let textBefore = textNodeBefore$1(sel.focusNode, sel.focusOffset);
       let textAfter = textNodeAfter$1(sel.focusNode, sel.focusOffset);
       if (textBefore && textAfter && textBefore != textAfter) {
-          let descAfter = textAfter.pmViewDesc;
+          let descAfter = textAfter.pmViewDesc, lastChanged = view.domObserver.lastChangedTextNode;
+          if (textBefore == lastChanged || textAfter == lastChanged)
+              return lastChanged;
           if (!descAfter || !descAfter.isText(textAfter.nodeValue)) {
               return textAfter;
           }
@@ -23090,15 +23334,17 @@
   /**
   @internal
   */
-  function endComposition(view, forceUpdate = false) {
+  function endComposition(view, restarting = false) {
       if (android && view.domObserver.flushingSoon >= 0)
           return;
       view.domObserver.forceFlush();
       clearComposition(view);
-      if (forceUpdate || view.docView && view.docView.dirty) {
-          let sel = selectionFromDOM(view);
-          if (sel && !sel.eq(view.state.selection))
+      if (restarting || view.docView && view.docView.dirty) {
+          let sel = selectionFromDOM(view), cur = view.state.selection;
+          if (sel && !sel.eq(cur))
               view.dispatch(view.state.tr.setSelection(sel));
+          else if ((view.markCursor || restarting) && !cur.$from.node(cur.$from.sharedDepth(cur.to)).inlineContent)
+              view.dispatch(view.state.tr.deleteSelection());
           else
               view.updateState(view.state);
           return true;
@@ -23218,6 +23464,10 @@
       }
   }
   const dragCopyModifier = mac$4 ? "altKey" : "ctrlKey";
+  function dragMoves(view, event) {
+      let moves = view.someProp("dragCopies", test => !test(event));
+      return moves != null ? moves : !event[dragCopyModifier];
+  }
   handlers.dragstart = (view, _event) => {
       let event = _event;
       let mouseDown = view.input.mouseDown;
@@ -23239,13 +23489,15 @@
       }
       let draggedSlice = (node || view.state.selection).content();
       let { dom, text, slice } = serializeForClipboard(view, draggedSlice);
-      event.dataTransfer.clearData();
+      // Pre-120 Chrome versions clear files when calling `clearData` (#1472)
+      if (!event.dataTransfer.files.length || !chrome || chrome_version > 120)
+          event.dataTransfer.clearData();
       event.dataTransfer.setData(brokenClipboardAPI ? "Text" : "text/html", dom.innerHTML);
       // See https://github.com/ProseMirror/prosemirror/issues/1156
       event.dataTransfer.effectAllowed = "copyMove";
       if (!brokenClipboardAPI)
           event.dataTransfer.setData("text/plain", text);
-      view.dragging = new Dragging(slice, !event[dragCopyModifier], node);
+      view.dragging = new Dragging(slice, dragMoves(view, event), node);
   };
   handlers.dragend = view => {
       let dragging = view.dragging;
@@ -23267,12 +23519,12 @@
       let $mouse = view.state.doc.resolve(eventPos.pos);
       let slice = dragging && dragging.slice;
       if (slice) {
-          view.someProp("transformPasted", f => { slice = f(slice, view); });
+          view.someProp("transformPasted", f => { slice = f(slice, view, false); });
       }
       else {
           slice = parseFromClipboard(view, getText(event.dataTransfer), brokenClipboardAPI ? null : event.dataTransfer.getData("text/html"), false, $mouse);
       }
-      let move = !!(dragging && !event[dragCopyModifier]);
+      let move = !!(dragging && dragMoves(view, event));
       if (view.someProp("handleDrop", f => f(view, event, slice || Slice.empty, move))) {
           event.preventDefault();
           return;
@@ -23753,6 +24005,7 @@
           }
           return result;
       }
+      forEachSet(f) { f(this); }
   }
   /**
   The empty set of decorations.
@@ -23827,6 +24080,10 @@
               default: return new DecorationGroup(members.every(m => m instanceof DecorationSet) ? members :
                   members.reduce((r, m) => r.concat(m instanceof DecorationSet ? m : m.members), []));
           }
+      }
+      forEachSet(f) {
+          for (let i = 0; i < this.members.length; i++)
+              this.members[i].forEachSet(f);
       }
   }
   function mapChildren(oldChildren, newLocal, mapping, node, offset, oldOffset, options) {
@@ -24082,6 +24339,7 @@
           this.currentSelection = new SelectionState;
           this.onCharData = null;
           this.suppressingSelectionUpdates = false;
+          this.lastChangedTextNode = null;
           this.observer = window.MutationObserver &&
               new window.MutationObserver(mutations => {
                   for (let i = 0; i < mutations.length; i++)
@@ -24214,14 +24472,22 @@
                   }
               }
           }
-          if (gecko && added.length > 1) {
+          if (gecko && added.length) {
               let brs = added.filter(n => n.nodeName == "BR");
               if (brs.length == 2) {
-                  let a = brs[0], b = brs[1];
+                  let [a, b] = brs;
                   if (a.parentNode && a.parentNode.parentNode == b.parentNode)
                       b.remove();
                   else
                       a.remove();
+              }
+              else {
+                  let { focusNode } = this.currentSelection;
+                  for (let br of brs) {
+                      let parent = br.parentNode;
+                      if (parent && parent.nodeName == "LI" && (!focusNode || blockParent(view, focusNode) != parent))
+                          br.remove();
+                  }
               }
           }
           let readSel = null;
@@ -24263,8 +24529,12 @@
           if (!desc || desc.ignoreMutation(mut))
               return null;
           if (mut.type == "childList") {
-              for (let i = 0; i < mut.addedNodes.length; i++)
-                  added.push(mut.addedNodes[i]);
+              for (let i = 0; i < mut.addedNodes.length; i++) {
+                  let node = mut.addedNodes[i];
+                  added.push(node);
+                  if (node.nodeType == 3)
+                      this.lastChangedTextNode = node;
+              }
               if (desc.contentDOM && desc.contentDOM != desc.dom && !desc.contentDOM.contains(mut.target))
                   return { from: desc.posBefore, to: desc.posAfter };
               let prev = mut.previousSibling, next = mut.nextSibling;
@@ -24291,6 +24561,7 @@
               return { from: desc.posAtStart - desc.border, to: desc.posAtEnd + desc.border };
           }
           else { // "characterData"
+              this.lastChangedTextNode = mut.target;
               return {
                   from: desc.posAtStart,
                   to: desc.posAtEnd,
@@ -24351,6 +24622,14 @@
       document.execCommand("indent");
       view.dom.removeEventListener("beforeinput", read, true);
       return found ? rangeToSelectionRange(view, found) : null;
+  }
+  function blockParent(view, node) {
+      for (let p = node.parentNode; p && p != view.dom; p = p.parentNode) {
+          let desc = view.docView.nearestDesc(p, true);
+          if (desc && desc.node.isBlock)
+              return p;
+      }
+      return null;
   }
 
   // Note that all referencing and parsing is done with the
@@ -24426,7 +24705,7 @@
       }
       return null;
   }
-  const isInline = /^(a|abbr|acronym|b|bd[io]|big|br|button|cite|code|data(list)?|del|dfn|em|i|ins|kbd|label|map|mark|meter|output|q|ruby|s|samp|small|span|strong|su[bp]|time|u|tt|var)$/i;
+  const isInline = /^(a|abbr|acronym|b|bd[io]|big|br|button|cite|code|data(list)?|del|dfn|em|i|img|ins|kbd|label|map|mark|meter|output|q|ruby|s|samp|small|span|strong|su[bp]|time|u|tt|var)$/i;
   function readDOMChange(view, from, to, typeOver, addedNodes) {
       let compositionID = view.input.compositionPendingChanges || (view.composing ? view.input.compositionID : 0);
       view.input.compositionPendingChanges = 0;
@@ -24468,6 +24747,8 @@
       }
       view.input.lastKeyCode = null;
       let change = findDiff(compare.content, parse.doc.content, parse.from, preferredPos, preferredSide);
+      if (change)
+          view.input.domChangeCount++;
       if ((ios && view.input.lastIOSEnter > Date.now() - 225 || android) &&
           addedNodes.some(n => n.nodeType == 1 && !isInline.test(n.nodeName)) &&
           (!change || change.endA >= change.endB) &&
@@ -24493,7 +24774,6 @@
               return;
           }
       }
-      view.input.domChangeCount++;
       // Handle the case where overwriting a selection by typing matches
       // the start or end of the selected content, creating a change
       // that's smaller than what was actually overwritten.
@@ -24524,14 +24804,13 @@
       let $to = parse.doc.resolveNoCache(change.endB - parse.from);
       let $fromA = doc.resolve(change.start);
       let inlineChange = $from.sameParent($to) && $from.parent.inlineContent && $fromA.end() >= change.endA;
-      let nextSel;
       // If this looks like the effect of pressing Enter (or was recorded
       // as being an iOS enter press), just dispatch an Enter key instead.
       if (((ios && view.input.lastIOSEnter > Date.now() - 225 &&
           (!inlineChange || addedNodes.some(n => n.nodeName == "DIV" || n.nodeName == "P"))) ||
-          (!inlineChange && $from.pos < parse.doc.content.size && !$from.sameParent($to) &&
-              (nextSel = Selection.findFrom(parse.doc.resolve($from.pos + 1), 1, true)) &&
-              nextSel.head == $to.pos)) &&
+          (!inlineChange && $from.pos < parse.doc.content.size &&
+              (!$from.sameParent($to) || !$from.parent.inlineContent) &&
+              $from.pos < $to.pos && !/\S/.test(parse.doc.textBetween($from.pos, $to.pos, "", "")))) &&
           view.someProp("handleKeyDown", f => f(view, keyEvent(13, "Enter")))) {
           view.input.lastIOSEnter = 0;
           return;
@@ -24544,11 +24823,11 @@
               view.domObserver.suppressSelectionUpdates(); // #820
           return;
       }
-      // Chrome Android will occasionally, during composition, delete the
+      // Chrome will occasionally, during composition, delete the
       // entire composition and then immediately insert it again. This is
       // used to detect that situation.
-      if (chrome && android && change.endB == change.start)
-          view.input.lastAndroidDelete = Date.now();
+      if (chrome && change.endB == change.start)
+          view.input.lastChromeDelete = Date.now();
       // This tries to detect Android virtual keyboard
       // enter-and-pick-suggestion action. That sometimes (see issue
       // #1059) first fires a DOM mutation, before moving the selection to
@@ -24566,7 +24845,26 @@
           }, 20);
       }
       let chFrom = change.start, chTo = change.endA;
-      let tr, storedMarks, markChange;
+      let mkTr = (base) => {
+          let tr = base || view.state.tr.replace(chFrom, chTo, parse.doc.slice(change.start - parse.from, change.endB - parse.from));
+          if (parse.sel) {
+              let sel = resolveSelection(view, tr.doc, parse.sel);
+              // Chrome will sometimes, during composition, report the
+              // selection in the wrong place. If it looks like that is
+              // happening, don't update the selection.
+              // Edge just doesn't move the cursor forward when you start typing
+              // in an empty block or between br nodes.
+              if (sel && !(chrome && view.composing && sel.empty &&
+                  (change.start != change.endB || view.input.lastChromeDelete < Date.now() - 100) &&
+                  (sel.head == chFrom || sel.head == tr.mapping.map(chTo) - 1) ||
+                  ie$1 && sel.empty && sel.head == chFrom))
+                  tr.setSelection(sel);
+          }
+          if (compositionID)
+              tr.setMeta("composition", compositionID);
+          return tr.scrollIntoView();
+      };
+      let markChange;
       if (inlineChange) {
           if ($from.pos == $to.pos) { // Deletion
               // IE11 sometimes weirdly moves the DOM selection around after
@@ -24575,46 +24873,36 @@
                   view.domObserver.suppressSelectionUpdates();
                   setTimeout(() => selectionToDOM(view), 20);
               }
-              tr = view.state.tr.delete(chFrom, chTo);
-              storedMarks = doc.resolve(change.start).marksAcross(doc.resolve(change.endA));
+              let tr = mkTr(view.state.tr.delete(chFrom, chTo));
+              let marks = doc.resolve(change.start).marksAcross(doc.resolve(change.endA));
+              if (marks)
+                  tr.ensureMarks(marks);
+              view.dispatch(tr);
           }
           else if ( // Adding or removing a mark
           change.endA == change.endB &&
               (markChange = isMarkChange($from.parent.content.cut($from.parentOffset, $to.parentOffset), $fromA.parent.content.cut($fromA.parentOffset, change.endA - $fromA.start())))) {
-              tr = view.state.tr;
+              let tr = mkTr(view.state.tr);
               if (markChange.type == "add")
                   tr.addMark(chFrom, chTo, markChange.mark);
               else
                   tr.removeMark(chFrom, chTo, markChange.mark);
+              view.dispatch(tr);
           }
           else if ($from.parent.child($from.index()).isText && $from.index() == $to.index() - ($to.textOffset ? 0 : 1)) {
               // Both positions in the same text node -- simply insert text
               let text = $from.parent.textBetween($from.parentOffset, $to.parentOffset);
-              if (view.someProp("handleTextInput", f => f(view, chFrom, chTo, text)))
-                  return;
-              tr = view.state.tr.insertText(text, chFrom, chTo);
+              let deflt = () => mkTr(view.state.tr.insertText(text, chFrom, chTo));
+              if (!view.someProp("handleTextInput", f => f(view, chFrom, chTo, text, deflt)))
+                  view.dispatch(deflt());
+          }
+          else {
+              view.dispatch(mkTr());
           }
       }
-      if (!tr)
-          tr = view.state.tr.replace(chFrom, chTo, parse.doc.slice(change.start - parse.from, change.endB - parse.from));
-      if (parse.sel) {
-          let sel = resolveSelection(view, tr.doc, parse.sel);
-          // Chrome Android will sometimes, during composition, report the
-          // selection in the wrong place. If it looks like that is
-          // happening, don't update the selection.
-          // Edge just doesn't move the cursor forward when you start typing
-          // in an empty block or between br nodes.
-          if (sel && !(chrome && android && view.composing && sel.empty &&
-              (change.start != change.endB || view.input.lastAndroidDelete < Date.now() - 100) &&
-              (sel.head == chFrom || sel.head == tr.mapping.map(chTo) - 1) ||
-              ie$1 && sel.empty && sel.head == chFrom))
-              tr.setSelection(sel);
+      else {
+          view.dispatch(mkTr());
       }
-      if (storedMarks)
-          tr.ensureMarks(storedMarks);
-      if (compositionID)
-          tr.setMeta("composition", compositionID);
-      view.dispatch(tr.scrollIntoView());
   }
   function resolveSelection(view, doc, parsedSel) {
       if (Math.max(parsedSel.anchor, parsedSel.head) > doc.content.size)
@@ -24942,7 +25230,8 @@
       */
       scrollToSelection() {
           let startDOM = this.domSelectionRange().focusNode;
-          if (this.someProp("handleScrollToSelection", f => f(this))) ;
+          if (!startDOM || !this.dom.contains(startDOM.nodeType == 1 ? startDOM : startDOM.parentNode)) ;
+          else if (this.someProp("handleScrollToSelection", f => f(this))) ;
           else if (this.state.selection instanceof NodeSelection) {
               let target = this.docView.domAfterPos(this.state.selection.from);
               if (target.nodeType == 1)
@@ -25162,6 +25451,17 @@
           return doPaste(this, text, null, true, event || new ClipboardEvent("paste"));
       }
       /**
+      Serialize the given slice as it would be if it was copied from
+      this editor. Returns a DOM element that contains a
+      representation of the slice as its children, a textual
+      representation, and the transformed slice (which can be
+      different from the given input due to hooks like
+      [`transformCopied`](https://prosemirror.net/docs/ref/#view.EditorProps.transformCopied)).
+      */
+      serializeForClipboard(slice) {
+          return serializeForClipboard(this, slice);
+      }
+      /**
       Removes the editor from the DOM and destroys all [node
       views](https://prosemirror.net/docs/ref/#view.NodeView).
       */
@@ -25196,26 +25496,12 @@
           return dispatchEvent(this, event);
       }
       /**
-      Dispatch a transaction. Will call
-      [`dispatchTransaction`](https://prosemirror.net/docs/ref/#view.DirectEditorProps.dispatchTransaction)
-      when given, and otherwise defaults to applying the transaction to
-      the current state and calling
-      [`updateState`](https://prosemirror.net/docs/ref/#view.EditorView.updateState) with the result.
-      This method is bound to the view instance, so that it can be
-      easily passed around.
-      */
-      dispatch(tr) {
-          let dispatchTransaction = this._props.dispatchTransaction;
-          if (dispatchTransaction)
-              dispatchTransaction.call(this, tr);
-          else
-              this.updateState(this.state.apply(tr));
-      }
-      /**
       @internal
       */
       domSelectionRange() {
           let sel = this.domSelection();
+          if (!sel)
+              return { focusNode: null, focusOffset: 0, anchorNode: null, anchorOffset: 0 };
           return safari && this.root.nodeType === 11 &&
               deepActiveElement(this.dom.ownerDocument) == this.dom && safariShadowSelectionRange(this, sel) || sel;
       }
@@ -25226,6 +25512,13 @@
           return this.root.getSelection();
       }
   }
+  EditorView.prototype.dispatch = function (tr) {
+      let dispatchTransaction = this._props.dispatchTransaction;
+      if (dispatchTransaction)
+          dispatchTransaction.call(this, tr);
+      else
+          this.updateState(this.state.apply(tr));
+  };
   function computeDocDeco(view) {
       let attrs = Object.create(null);
       attrs.class = "ProseMirror";
@@ -25253,7 +25546,7 @@
           dom.className = "ProseMirror-separator";
           dom.setAttribute("mark-placeholder", "true");
           dom.setAttribute("alt", "");
-          view.cursorWrapper = { dom, deco: Decoration.widget(view.state.selection.head, dom, { raw: true, marks: view.markCursor }) };
+          view.cursorWrapper = { dom, deco: Decoration.widget(view.state.selection.from, dom, { raw: true, marks: view.markCursor }) };
       }
       else {
           view.cursorWrapper = null;
@@ -25355,14 +25648,12 @@
    * a === b // values match
    * ```
    *
+   * @template {string} T
    * @typedef {Object} SimpleDiff
    * @property {Number} index The index where changes were applied
    * @property {Number} remove The number of characters to delete starting
    *                                  at `index`.
    * @property {T} insert The new text to insert at `index` after applying
-   *                           `delete`
-   *
-   * @template T
    */
 
   const highSurrogateRegex = /[\uD800-\uDBFF]/;
@@ -27795,7 +28086,8 @@
     return name
   }
 
-  const mac$2 = typeof navigator != "undefined" ? /Mac|iP(hone|[oa]d)/.test(navigator.platform) : false;
+  const mac$2 = typeof navigator != "undefined" && /Mac|iP(hone|[oa]d)/.test(navigator.platform);
+  const windows = typeof navigator != "undefined" && /Win/.test(navigator.platform);
   function normalizeKeyName(name) {
       let parts = name.split(/-(?!$)/), result = parts[parts.length - 1];
       if (result == "Space")
@@ -27901,12 +28193,14 @@
                   if (noShift && noShift(view.state, view.dispatch, view))
                       return true;
               }
-              if ((event.shiftKey || event.altKey || event.metaKey || name.charCodeAt(0) > 127) &&
+              if ((event.altKey || event.metaKey || event.ctrlKey) &&
+                  // Ctrl-Alt may be used for AltGr on Windows
+                  !(windows && event.ctrlKey && event.altKey) &&
                   (baseName = base[event.keyCode]) && baseName != name) {
                   // Try falling back to the keyCode when there's a modifier
                   // active or the character produced isn't ASCII, and our table
                   // produces a different name from the the keyCode. See #668,
-                  // #1060
+                  // #1060, #1529.
                   let fromCode = map[modifiers(baseName, event)];
                   if (fromCode && fromCode(view.state, view.dispatch, view))
                       return true;
@@ -28387,7 +28681,7 @@
       }
       else if (appended && appended.getMeta(historyKey)) {
           if (appended.getMeta(historyKey).redo)
-              return new HistoryState(history.done.addTransform(tr, undefined, options, mustPreserveItems(state)), history.undone, rangesFor(tr.mapping.maps[tr.steps.length - 1]), history.prevTime, history.prevComposition);
+              return new HistoryState(history.done.addTransform(tr, undefined, options, mustPreserveItems(state)), history.undone, rangesFor(tr.mapping.maps), history.prevTime, history.prevComposition);
           else
               return new HistoryState(history.done, history.undone.addTransform(tr, undefined, options, mustPreserveItems(state)), null, history.prevTime, history.prevComposition);
       }
@@ -28397,7 +28691,7 @@
           let newGroup = history.prevTime == 0 ||
               (!appended && history.prevComposition != composition &&
                   (history.prevTime < (tr.time || 0) - options.newGroupDelay || !isAdjacentTo(tr, history.prevRanges)));
-          let prevRanges = appended ? mapRanges(history.prevRanges, tr.mapping) : rangesFor(tr.mapping.maps[tr.steps.length - 1]);
+          let prevRanges = appended ? mapRanges(history.prevRanges, tr.mapping) : rangesFor(tr.mapping.maps);
           return new HistoryState(history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined, options, mustPreserveItems(state)), Branch.empty, prevRanges, tr.time, composition == null ? history.prevComposition : composition);
       }
       else if (rebased = tr.getMeta("rebased")) {
@@ -28422,9 +28716,10 @@
       });
       return adjacent;
   }
-  function rangesFor(map) {
+  function rangesFor(maps) {
       let result = [];
-      map.forEach((_from, _to, from, to) => result.push(from, to));
+      for (let i = maps.length - 1; i >= 0 && result.length == 0; i--)
+          maps[i].forEach((_from, _to, from, to) => result.push(from, to));
       return result;
   }
   function mapRanges(ranges, mapping) {
@@ -28572,21 +28867,26 @@
       }
       let before = $cut.nodeBefore;
       // Apply the joining algorithm
-      if (!before.type.spec.isolating && deleteBarrier(state, $cut, dispatch))
+      if (deleteBarrier(state, $cut, dispatch, -1))
           return true;
       // If the node below has no content and the node above is
       // selectable, delete the node below and select the one above.
       if ($cursor.parent.content.size == 0 &&
           (textblockAt(before, "end") || NodeSelection.isSelectable(before))) {
-          let delStep = replaceStep(state.doc, $cursor.before(), $cursor.after(), Slice.empty);
-          if (delStep && delStep.slice.size < delStep.to - delStep.from) {
-              if (dispatch) {
-                  let tr = state.tr.step(delStep);
-                  tr.setSelection(textblockAt(before, "end") ? Selection.findFrom(tr.doc.resolve(tr.mapping.map($cut.pos, -1)), -1)
-                      : NodeSelection.create(tr.doc, $cut.pos - before.nodeSize));
-                  dispatch(tr.scrollIntoView());
+          for (let depth = $cursor.depth;; depth--) {
+              let delStep = replaceStep(state.doc, $cursor.before(depth), $cursor.after(depth), Slice.empty);
+              if (delStep && delStep.slice.size < delStep.to - delStep.from) {
+                  if (dispatch) {
+                      let tr = state.tr.step(delStep);
+                      tr.setSelection(textblockAt(before, "end")
+                          ? Selection.findFrom(tr.doc.resolve(tr.mapping.map($cut.pos, -1)), -1)
+                          : NodeSelection.create(tr.doc, $cut.pos - before.nodeSize));
+                      dispatch(tr.scrollIntoView());
+                  }
+                  return true;
               }
-              return true;
+              if (depth == 1 || $cursor.node(depth - 1).childCount > 1)
+                  break;
           }
       }
       // If the node before is an atom, delete it
@@ -28664,7 +28964,7 @@
           return false;
       let after = $cut.nodeAfter;
       // Try the joining algorithm
-      if (deleteBarrier(state, $cut, dispatch))
+      if (deleteBarrier(state, $cut, dispatch, 1))
           return true;
       // If the node above has no content and the node below is
       // selectable, delete the node above and select the one below.
@@ -28878,32 +29178,46 @@
                   dispatch(state.tr.split($from.pos).scrollIntoView());
               return true;
           }
-          if (!$from.parent.isBlock)
+          if (!$from.depth)
               return false;
-          if (dispatch) {
-              let atEnd = $to.parentOffset == $to.parent.content.size;
-              let tr = state.tr;
-              if (state.selection instanceof TextSelection || state.selection instanceof AllSelection)
-                  tr.deleteSelection();
-              let deflt = $from.depth == 0 ? null : defaultBlockAt($from.node(-1).contentMatchAt($from.indexAfter(-1)));
-              let splitType = splitNode && splitNode($to.parent, atEnd);
-              let types = splitType ? [splitType] : atEnd && deflt ? [{ type: deflt }] : undefined;
-              let can = canSplit(tr.doc, tr.mapping.map($from.pos), 1, types);
-              if (!types && !can && canSplit(tr.doc, tr.mapping.map($from.pos), 1, deflt ? [{ type: deflt }] : undefined)) {
-                  if (deflt)
-                      types = [{ type: deflt }];
-                  can = true;
+          let types = [];
+          let splitDepth, deflt, atEnd = false, atStart = false;
+          for (let d = $from.depth;; d--) {
+              let node = $from.node(d);
+              if (node.isBlock) {
+                  atEnd = $from.end(d) == $from.pos + ($from.depth - d);
+                  atStart = $from.start(d) == $from.pos - ($from.depth - d);
+                  deflt = defaultBlockAt($from.node(d - 1).contentMatchAt($from.indexAfter(d - 1)));
+                  let splitType = splitNode && splitNode($to.parent, atEnd, $from);
+                  types.unshift(splitType || (atEnd && deflt ? { type: deflt } : null));
+                  splitDepth = d;
+                  break;
               }
-              if (can) {
-                  tr.split(tr.mapping.map($from.pos), 1, types);
-                  if (!atEnd && !$from.parentOffset && $from.parent.type != deflt) {
-                      let first = tr.mapping.map($from.before()), $first = tr.doc.resolve(first);
-                      if (deflt && $from.node(-1).canReplaceWith($first.index(), $first.index() + 1, deflt))
-                          tr.setNodeMarkup(tr.mapping.map($from.before()), deflt);
-                  }
+              else {
+                  if (d == 1)
+                      return false;
+                  types.unshift(null);
               }
-              dispatch(tr.scrollIntoView());
           }
+          let tr = state.tr;
+          if (state.selection instanceof TextSelection || state.selection instanceof AllSelection)
+              tr.deleteSelection();
+          let splitPos = tr.mapping.map($from.pos);
+          let can = canSplit(tr.doc, splitPos, types.length, types);
+          if (!can) {
+              types[0] = deflt ? { type: deflt } : null;
+              can = canSplit(tr.doc, splitPos, types.length, types);
+          }
+          if (!can)
+              return false;
+          tr.split(splitPos, types.length, types);
+          if (!atEnd && atStart && $from.node(splitDepth).type != deflt) {
+              let first = tr.mapping.map($from.before(splitDepth)), $first = tr.doc.resolve(first);
+              if (deflt && $from.node(splitDepth - 1).canReplaceWith($first.index(), $first.index() + 1, deflt))
+                  tr.setNodeMarkup(tr.mapping.map($from.before(splitDepth)), deflt);
+          }
+          if (dispatch)
+              dispatch(tr.scrollIntoView());
           return true;
       };
   }
@@ -28946,19 +29260,15 @@
       if (!$pos.parent.canReplace(index, index + 1) || !(after.isTextblock || canJoin(state.doc, $pos.pos)))
           return false;
       if (dispatch)
-          dispatch(state.tr
-              .clearIncompatible($pos.pos, before.type, before.contentMatchAt(before.childCount))
-              .join($pos.pos)
-              .scrollIntoView());
+          dispatch(state.tr.join($pos.pos).scrollIntoView());
       return true;
   }
-  function deleteBarrier(state, $cut, dispatch) {
+  function deleteBarrier(state, $cut, dispatch, dir) {
       let before = $cut.nodeBefore, after = $cut.nodeAfter, conn, match;
-      if (before.type.spec.isolating || after.type.spec.isolating)
-          return false;
-      if (joinMaybeClear(state, $cut, dispatch))
+      let isolated = before.type.spec.isolating || after.type.spec.isolating;
+      if (!isolated && joinMaybeClear(state, $cut, dispatch))
           return true;
-      let canDelAfter = $cut.parent.canReplace($cut.index(), $cut.index() + 1);
+      let canDelAfter = !isolated && $cut.parent.canReplace($cut.index(), $cut.index() + 1);
       if (canDelAfter &&
           (conn = (match = before.contentMatchAt(before.childCount)).findWrapping(after.type)) &&
           match.matchType(conn[0] || after.type).validEnd) {
@@ -28968,14 +29278,15 @@
                   wrap = Fragment.from(conn[i].create(null, wrap));
               wrap = Fragment.from(before.copy(wrap));
               let tr = state.tr.step(new ReplaceAroundStep($cut.pos - 1, end, $cut.pos, end, new Slice(wrap, 1, 0), conn.length, true));
-              let joinAt = end + 2 * conn.length;
-              if (canJoin(tr.doc, joinAt))
-                  tr.join(joinAt);
+              let $joinAt = tr.doc.resolve(end + 2 * conn.length);
+              if ($joinAt.nodeAfter && $joinAt.nodeAfter.type == before.type &&
+                  canJoin(tr.doc, $joinAt.pos))
+                  tr.join($joinAt.pos);
               dispatch(tr.scrollIntoView());
           }
           return true;
       }
-      let selAfter = Selection.findFrom($cut, 1);
+      let selAfter = after.type.spec.isolating || (dir > 0 && isolated) ? null : Selection.findFrom($cut, 1);
       let range = selAfter && selAfter.$from.blockRange(selAfter.$to), target = range && liftTarget(range);
       if (target != null && target >= $cut.depth) {
           if (dispatch)
@@ -29082,12 +29393,12 @@
           return true;
       };
   }
-  function markApplies(doc, ranges, type) {
+  function markApplies(doc, ranges, type, enterAtoms) {
       for (let i = 0; i < ranges.length; i++) {
           let { $from, $to } = ranges[i];
           let can = $from.depth == 0 ? doc.inlineContent && doc.type.allowsMarkType(type) : false;
-          doc.nodesBetween($from.pos, $to.pos, node => {
-              if (can)
+          doc.nodesBetween($from.pos, $to.pos, (node, pos) => {
+              if (can || !enterAtoms && node.isAtom && node.isInline && pos >= $from.pos && pos + node.nodeSize <= $to.pos)
                   return false;
               can = node.inlineContent && node.type.allowsMarkType(type);
           });
@@ -29095,6 +29406,23 @@
               return true;
       }
       return false;
+  }
+  function removeInlineAtoms(ranges) {
+      let result = [];
+      for (let i = 0; i < ranges.length; i++) {
+          let { $from, $to } = ranges[i];
+          $from.doc.nodesBetween($from.pos, $to.pos, (node, pos) => {
+              if (node.isAtom && node.content.size && node.isInline && pos >= $from.pos && pos + node.nodeSize <= $to.pos) {
+                  if (pos + 1 > $from.pos)
+                      result.push(new SelectionRange($from, $from.doc.resolve(pos + 1)));
+                  $from = $from.doc.resolve(pos + 1 + node.content.size);
+                  return false;
+              }
+          });
+          if ($from.pos < $to.pos)
+              result.push(new SelectionRange($from, $to));
+      }
+      return result;
   }
   /**
   Create a command function that toggles the given mark with the
@@ -29105,10 +29433,13 @@
   marks](https://prosemirror.net/docs/ref/#state.EditorState.storedMarks) instead of a range of the
   document.
   */
-  function toggleMark(markType, attrs = null) {
+  function toggleMark(markType, attrs = null, options) {
+      let removeWhenPresent = (options && options.removeWhenPresent) !== false;
+      let enterAtoms = (options && options.enterInlineAtoms) !== false;
+      let dropSpace = !(options && options.includeWhitespace);
       return function (state, dispatch) {
           let { empty, $cursor, ranges } = state.selection;
-          if ((empty && !$cursor) || !markApplies(state.doc, ranges, markType))
+          if ((empty && !$cursor) || !markApplies(state.doc, ranges, markType, enterAtoms))
               return false;
           if (dispatch) {
               if ($cursor) {
@@ -29118,20 +29449,33 @@
                       dispatch(state.tr.addStoredMark(markType.create(attrs)));
               }
               else {
-                  let has = false, tr = state.tr;
-                  for (let i = 0; !has && i < ranges.length; i++) {
-                      let { $from, $to } = ranges[i];
-                      has = state.doc.rangeHasMark($from.pos, $to.pos, markType);
+                  let add, tr = state.tr;
+                  if (!enterAtoms)
+                      ranges = removeInlineAtoms(ranges);
+                  if (removeWhenPresent) {
+                      add = !ranges.some(r => state.doc.rangeHasMark(r.$from.pos, r.$to.pos, markType));
+                  }
+                  else {
+                      add = !ranges.every(r => {
+                          let missing = false;
+                          tr.doc.nodesBetween(r.$from.pos, r.$to.pos, (node, pos, parent) => {
+                              if (missing)
+                                  return false;
+                              missing = !markType.isInSet(node.marks) && !!parent && parent.type.allowsMarkType(markType) &&
+                                  !(node.isText && /^\s*$/.test(node.textBetween(Math.max(0, r.$from.pos - pos), Math.min(node.nodeSize, r.$to.pos - pos))));
+                          });
+                          return !missing;
+                      });
                   }
                   for (let i = 0; i < ranges.length; i++) {
                       let { $from, $to } = ranges[i];
-                      if (has) {
+                      if (!add) {
                           tr.removeMark($from.pos, $to.pos, markType);
                       }
                       else {
                           let from = $from.pos, to = $to.pos, start = $from.nodeAfter, end = $to.nodeBefore;
-                          let spaceStart = start && start.isText ? /^\s*/.exec(start.text)[0].length : 0;
-                          let spaceEnd = end && end.isText ? /\s*$/.exec(end.text)[0].length : 0;
+                          let spaceStart = dropSpace && start && start.isText ? /^\s*/.exec(start.text)[0].length : 0;
+                          let spaceEnd = dropSpace && end && end.isText ? /\s*$/.exec(end.text)[0].length : 0;
                           if (from + spaceStart < to) {
                               from += spaceStart;
                               to -= spaceEnd;
@@ -29266,6 +29610,8 @@
       updateOverlay() {
           let $pos = this.editorView.state.doc.resolve(this.cursorPos);
           let isBlock = !$pos.parent.inlineContent, rect;
+          let editorDOM = this.editorView.dom, editorRect = editorDOM.getBoundingClientRect();
+          let scaleX = editorRect.width / editorDOM.offsetWidth, scaleY = editorRect.height / editorDOM.offsetHeight;
           if (isBlock) {
               let before = $pos.nodeBefore, after = $pos.nodeAfter;
               if (before || after) {
@@ -29275,13 +29621,15 @@
                       let top = before ? nodeRect.bottom : nodeRect.top;
                       if (before && after)
                           top = (top + this.editorView.nodeDOM(this.cursorPos).getBoundingClientRect().top) / 2;
-                      rect = { left: nodeRect.left, right: nodeRect.right, top: top - this.width / 2, bottom: top + this.width / 2 };
+                      let halfWidth = (this.width / 2) * scaleY;
+                      rect = { left: nodeRect.left, right: nodeRect.right, top: top - halfWidth, bottom: top + halfWidth };
                   }
               }
           }
           if (!rect) {
               let coords = this.editorView.coordsAtPos(this.cursorPos);
-              rect = { left: coords.left - this.width / 2, right: coords.left + this.width / 2, top: coords.top, bottom: coords.bottom };
+              let halfWidth = (this.width / 2) * scaleX;
+              rect = { left: coords.left - halfWidth, right: coords.left + halfWidth, top: coords.top, bottom: coords.bottom };
           }
           let parent = this.editorView.dom.offsetParent;
           if (!this.element) {
@@ -29302,13 +29650,14 @@
           }
           else {
               let rect = parent.getBoundingClientRect();
-              parentLeft = rect.left - parent.scrollLeft;
-              parentTop = rect.top - parent.scrollTop;
+              let parentScaleX = rect.width / parent.offsetWidth, parentScaleY = rect.height / parent.offsetHeight;
+              parentLeft = rect.left - parent.scrollLeft * parentScaleX;
+              parentTop = rect.top - parent.scrollTop * parentScaleY;
           }
-          this.element.style.left = (rect.left - parentLeft) + "px";
-          this.element.style.top = (rect.top - parentTop) + "px";
-          this.element.style.width = (rect.right - rect.left) + "px";
-          this.element.style.height = (rect.bottom - rect.top) + "px";
+          this.element.style.left = (rect.left - parentLeft) / scaleX + "px";
+          this.element.style.top = (rect.top - parentTop) / scaleY + "px";
+          this.element.style.width = (rect.right - rect.left) / scaleX + "px";
+          this.element.style.height = (rect.bottom - rect.top) / scaleY + "px";
       }
       scheduleRemoval(timeout) {
           clearTimeout(this.timeout);
@@ -29320,7 +29669,9 @@
           let pos = this.editorView.posAtCoords({ left: event.clientX, top: event.clientY });
           let node = pos && pos.inside >= 0 && this.editorView.state.doc.nodeAt(pos.inside);
           let disableDropCursor = node && node.type.spec.disableDropCursor;
-          let disabled = typeof disableDropCursor == "function" ? disableDropCursor(this.editorView, pos, event) : disableDropCursor;
+          let disabled = typeof disableDropCursor == "function"
+              ? disableDropCursor(this.editorView, pos, event)
+              : disableDropCursor;
           if (pos && !disabled) {
               let target = pos.pos;
               if (this.editorView.dragging && this.editorView.dragging.slice) {
@@ -29339,7 +29690,7 @@
           this.scheduleRemoval(20);
       }
       dragleave(event) {
-          if (event.target == this.editorView.dom || !this.editorView.dom.contains(event.relatedTarget))
+          if (!this.editorView.dom.contains(event.relatedTarget))
               this.setCursor(null);
       }
   }
@@ -29450,6 +29801,9 @@
           return GapCursor.valid($pos) ? new GapCursor($pos) : Selection.near($pos);
       }
   }
+  function needsGap(type) {
+      return type.isAtom || type.spec.isolating || type.spec.createGapCursor;
+  }
   function closedBefore($pos) {
       for (let d = $pos.depth; d >= 0; d--) {
           let index = $pos.index(d), parent = $pos.node(d);
@@ -29461,7 +29815,7 @@
           }
           // See if the node before (or its first ancestor) is closed
           for (let before = parent.child(index - 1);; before = before.lastChild) {
-              if ((before.childCount == 0 && !before.inlineContent) || before.isAtom || before.type.spec.isolating)
+              if ((before.childCount == 0 && !before.inlineContent) || needsGap(before.type))
                   return true;
               if (before.inlineContent)
                   return false;
@@ -29479,7 +29833,7 @@
               continue;
           }
           for (let after = parent.child(index);; after = after.firstChild) {
-              if ((after.childCount == 0 && !after.inlineContent) || after.isAtom || after.type.spec.isolating)
+              if ((after.childCount == 0 && !after.inlineContent) || needsGap(after.type))
                   return true;
               if (after.inlineContent)
                   return false;
@@ -30083,6 +30437,7 @@
           this.widthForMaxHeight = 0;
           this.floating = false;
           this.scrollHandler = null;
+          this.root = editorView.root;
           this.wrapper = crelt("div", { class: prefix$3 + "-wrapper" });
           this.menu = this.wrapper.appendChild(crelt("div", { class: prefix$3 }));
           this.menu.className = prefix$3;
@@ -30107,6 +30462,12 @@
           }
       }
       update() {
+          if (this.editorView.root != this.root) {
+              let { dom, update } = renderGrouped(this.editorView, this.options.content);
+              this.contentUpdate = update;
+              this.menu.replaceChild(dom, this.menu.firstChild);
+              this.root = this.editorView.root;
+          }
           this.contentUpdate(this.editorView.state);
           if (this.floating) {
               this.updateScrollCursor();
@@ -30202,27 +30563,43 @@
   function wrapInList(listType, attrs = null) {
       return function (state, dispatch) {
           let { $from, $to } = state.selection;
-          let range = $from.blockRange($to), doJoin = false, outerRange = range;
+          let range = $from.blockRange($to);
           if (!range)
               return false;
-          // This is at the top of an existing list item
-          if (range.depth >= 2 && $from.node(range.depth - 1).type.compatibleContent(listType) && range.startIndex == 0) {
-              // Don't do anything if this is the top of the list
-              if ($from.index(range.depth - 1) == 0)
-                  return false;
-              let $insert = state.doc.resolve(range.start - 2);
-              outerRange = new NodeRange($insert, $insert, range.depth);
-              if (range.endIndex < range.parent.childCount)
-                  range = new NodeRange($from, state.doc.resolve($to.end(range.depth)), range.depth);
-              doJoin = true;
-          }
-          let wrap = findWrapping(outerRange, listType, attrs, range);
-          if (!wrap)
+          let tr = dispatch ? state.tr : null;
+          if (!wrapRangeInList(tr, range, listType, attrs))
               return false;
           if (dispatch)
-              dispatch(doWrapInList(state.tr, range, wrap, doJoin, listType).scrollIntoView());
+              dispatch(tr.scrollIntoView());
           return true;
       };
+  }
+  /**
+  Try to wrap the given node range in a list of the given type.
+  Return `true` when this is possible, `false` otherwise. When `tr`
+  is non-null, the wrapping is added to that transaction. When it is
+  `null`, the function only queries whether the wrapping is
+  possible.
+  */
+  function wrapRangeInList(tr, range, listType, attrs = null) {
+      let doJoin = false, outerRange = range, doc = range.$from.doc;
+      // This is at the top of an existing list item
+      if (range.depth >= 2 && range.$from.node(range.depth - 1).type.compatibleContent(listType) && range.startIndex == 0) {
+          // Don't do anything if this is the top of the list
+          if (range.$from.index(range.depth - 1) == 0)
+              return false;
+          let $insert = doc.resolve(range.start - 2);
+          outerRange = new NodeRange($insert, $insert, range.depth);
+          if (range.endIndex < range.parent.childCount)
+              range = new NodeRange(range.$from, doc.resolve(range.$to.end(range.depth)), range.depth);
+          doJoin = true;
+      }
+      let wrap = findWrapping(outerRange, listType, attrs, range);
+      if (!wrap)
+          return false;
+      if (tr)
+          doWrapInList(tr, range, wrap, doJoin, listType);
+      return true;
   }
   function doWrapInList(tr, range, wrappers, joinBefore, listType) {
       let content = Fragment.empty;
@@ -30329,9 +30706,9 @@
       if (target == null)
           return false;
       tr.lift(range, target);
-      let after = tr.mapping.map(end, -1) - 1;
-      if (canJoin(tr.doc, after))
-          tr.join(after);
+      let $after = tr.doc.resolve(tr.mapping.map(end, -1) - 1);
+      if (canJoin(tr.doc, $after.pos) && $after.nodeBefore.type == $after.nodeAfter.type)
+          tr.join($after.pos);
       dispatch(tr.scrollIntoView());
       return true;
   }
@@ -30393,7 +30770,6 @@
   with `"> "` into a blockquote, or something entirely different.
   */
   class InputRule {
-      // :: (RegExp, union<string, (state: EditorState, match: [string], start: number, end: number) → ?Transaction>)
       /**
       Create an input rule. The rule applies when the user typed
       something and the text directly in front of the cursor matches
@@ -30420,6 +30796,7 @@
           this.handler = typeof handler == "string" ? stringHandler(handler) : handler;
           this.undoable = options.undoable !== false;
           this.inCode = options.inCode || false;
+          this.inCodeMark = options.inCodeMark !== false;
       }
   }
   function stringHandler(string) {
@@ -30480,6 +30857,8 @@
       let textBefore = $from.parent.textBetween(Math.max(0, $from.parentOffset - MAX_MATCH), $from.parentOffset, null, "\ufffc") + text;
       for (let i = 0; i < rules.length; i++) {
           let rule = rules[i];
+          if (!rule.inCodeMark && $from.marks().some(m => m.type.spec.code))
+              continue;
           if ($from.parent.type.spec.code) {
               if (!rule.inCode)
                   continue;
@@ -30488,7 +30867,19 @@
               continue;
           }
           let match = rule.match.exec(textBefore);
-          let tr = match && rule.handler(state, match, from - (match[0].length - text.length), to);
+          if (!match || match[0].length < text.length)
+              continue;
+          let startPos = from - (match[0].length - text.length);
+          if (!rule.inCodeMark) {
+              let hasMark = false;
+              state.doc.nodesBetween(startPos, $from.pos, node => {
+                  if (node.isInline && node.marks.some(m => m.type.spec.code))
+                      hasMark = true;
+              });
+              if (hasMark)
+                  continue;
+          }
+          let tr = rule.handler(state, match, startPos, to);
           if (!tr)
               continue;
           if (rule.undoable)
@@ -30529,27 +30920,27 @@
   /**
   Converts double dashes to an emdash.
   */
-  const emDash = new InputRule(/--$/, "—");
+  const emDash = new InputRule(/--$/, "—", { inCodeMark: false });
   /**
   Converts three dots to an ellipsis character.
   */
-  const ellipsis = new InputRule(/\.\.\.$/, "…");
+  const ellipsis = new InputRule(/\.\.\.$/, "…", { inCodeMark: false });
   /**
   “Smart” opening double quotes.
   */
-  const openDoubleQuote = new InputRule(/(?:^|[\s\{\[\(\<'"\u2018\u201C])(")$/, "“");
+  const openDoubleQuote = new InputRule(/(?:^|[\s\{\[\(\<'"\u2018\u201C])(")$/, "“", { inCodeMark: false });
   /**
   “Smart” closing double quotes.
   */
-  const closeDoubleQuote = new InputRule(/"$/, "”");
+  const closeDoubleQuote = new InputRule(/"$/, "”", { inCodeMark: false });
   /**
   “Smart” opening single quotes.
   */
-  const openSingleQuote = new InputRule(/(?:^|[\s\{\[\(\<'"\u2018\u201C])(')$/, "‘");
+  const openSingleQuote = new InputRule(/(?:^|[\s\{\[\(\<'"\u2018\u201C])(')$/, "‘", { inCodeMark: false });
   /**
   “Smart” closing single quotes.
   */
-  const closeSingleQuote = new InputRule(/'$/, "’");
+  const closeSingleQuote = new InputRule(/'$/, "’", { inCodeMark: false });
   /**
   Smart-quote related input rules.
   */
